@@ -1,0 +1,90 @@
+# Exemplo para nginx no host (Debian/Ubuntu: sites-available + symlink sites-enabled).
+# Substitua seudominio.com. TLS: use certbot (certonly --nginx) ou certificados em /etc/letsencrypt/live/...
+#
+# Upstreams (mesmas portas do compose local):
+#   app  → Expo web export ou processo na :8081
+#   api  → gateway :8080
+#   auth → Keycloak :8180
+
+upstream licitalens_app {
+    server 127.0.0.1:8081;
+    keepalive 8;
+}
+
+upstream licitalens_api {
+    server 127.0.0.1:8080;
+    keepalive 8;
+}
+
+upstream licitalens_auth {
+    server 127.0.0.1:8180;
+    keepalive 8;
+}
+
+# Redirect HTTP → HTTPS (opcional; certbot costuma adicionar isso)
+server {
+    listen 80;
+    listen [::]:80;
+    server_name app.seudominio.com api.seudominio.com auth.seudominio.com;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name app.seudominio.com;
+
+    ssl_certificate     /etc/letsencrypt/live/seudominio.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/seudominio.com/privkey.pem;
+
+    location / {
+        proxy_pass http://licitalens_app;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name api.seudominio.com;
+
+    ssl_certificate     /etc/letsencrypt/live/seudominio.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/seudominio.com/privkey.pem;
+
+    client_max_body_size 10m;
+
+    location / {
+        proxy_pass http://licitalens_api;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 120s;
+    }
+}
+
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name auth.seudominio.com;
+
+    ssl_certificate     /etc/letsencrypt/live/seudominio.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/seudominio.com/privkey.pem;
+
+    location / {
+        proxy_pass http://licitalens_auth;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_buffer_size 128k;
+        proxy_buffers 4 256k;
+        proxy_busy_buffers_size 256k;
+    }
+}

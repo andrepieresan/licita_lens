@@ -1,0 +1,92 @@
+name: licitalens
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_DB: licitalens
+      POSTGRES_USER: licitalens
+      POSTGRES_PASSWORD: local-only
+    ports: ["5432:5432"]
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./db/postgres:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U licitalens"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+  clickhouse:
+    image: clickhouse/clickhouse-server:25.8
+    ports: ["8123:8123", "9000:9000"]
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+      - ./db/clickhouse:/docker-entrypoint-initdb.d:ro
+  redpanda:
+    image: redpandadata/redpanda:v25.2.9
+    command: ["redpanda", "start", "--overprovisioned", "--smp", "1", "--memory", "1G", "--reserve-memory", "0M", "--node-id", "0", "--check=false", "--kafka-addr", "0.0.0.0:9092", "--advertise-kafka-addr", "redpanda:9092"]
+    ports: ["9092:9092", "9644:9644"]
+  minio:
+    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
+    command: server /data --console-address :9001
+    environment:
+      MINIO_ROOT_USER: licitalens
+      MINIO_ROOT_PASSWORD: local-only-password
+    ports: ["9001:9001", "9002:9000"]
+    volumes: ["minio-data:/data"]
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.3
+    command: start-dev --http-port=8080
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: local-only
+    ports: ["8180:8080"]
+  mailpit:
+    image: axllent/mailpit:v1.27
+    ports: ["1025:1025", "8025:8025"]
+  gateway:
+    build:
+      context: .
+      args: { SERVICE: gateway }
+    environment:
+      PORT: 8080
+      DATABASE_URL: postgres://licitalens:local-only@postgres:5432/licitalens
+      DEMO_MODE: "true"
+      AI_PROVIDER: ""
+    ports: ["8080:8080"]
+    depends_on:
+      postgres: { condition: service_healthy }
+  procurement:
+    build:
+      context: .
+      args: { SERVICE: procurement }
+    environment:
+      PORT: 8080
+      DATABASE_URL: postgres://licitalens:local-only@postgres:5432/licitalens
+      KAFKA_BROKERS: redpanda:9092
+    depends_on:
+      postgres: { condition: service_healthy }
+      redpanda: { condition: service_started }
+  ingestion:
+    build:
+      context: .
+      args: { SERVICE: ingestion }
+    environment:
+      PORT: 8080
+      KAFKA_BROKERS: redpanda:9092
+      S3_ENDPOINT: minio:9000
+      S3_ACCESS_KEY: licitalens
+      S3_SECRET_KEY: local-only-password
+      S3_BUCKET: licitalens-raw
+      S3_SECURE: "false"
+      SYNC_INTERVAL: ${SYNC_INTERVAL:-5m}
+      PNCP_RECENT_PAGES: ${PNCP_RECENT_PAGES:-3}
+      PNCP_MODALITIES: ${PNCP_MODALITIES:-6}
+      PNCP_PAGE_SIZE: ${PNCP_PAGE_SIZE:-50}
+    depends_on:
+      redpanda: { condition: service_started }
+      minio: { condition: service_started }
+
+volumes:
+  postgres-data:
+  clickhouse-data:
+  minio-data:

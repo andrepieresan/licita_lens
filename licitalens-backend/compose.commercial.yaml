@@ -1,0 +1,42 @@
+# Uso: docker compose -f compose.yaml -f compose.commercial.yaml ...
+name: licitalens
+
+services:
+  keycloak:
+    command: start-dev --http-port=8080 --import-realm
+    volumes:
+      - ./deploy/keycloak:/opt/keycloak/data/import:ro
+
+  notifications:
+    build:
+      context: .
+      args: { SERVICE: notifications }
+    env_file:
+      - path: .env.commercial.local
+        required: false
+    environment:
+      NOTIFICATIONS_WORKER: "true"
+      NOTIFICATIONS_INTERVAL: ${NOTIFICATIONS_INTERVAL:-2m}
+      DATABASE_URL: postgres://licitalens:local-only@postgres:5432/licitalens
+      DEMO_MODE: ${DEMO_MODE:-true}
+      SMTP_HOST: mailpit
+      SMTP_PORT: "1025"
+      SMTP_FROM: alerts@licitalens.local
+    depends_on:
+      postgres: { condition: service_healthy }
+      mailpit: { condition: service_started }
+
+  gateway:
+    env_file:
+      - path: .env.commercial.local
+        required: false
+    environment:
+      DATABASE_URL: postgres://licitalens:local-only@postgres:5432/licitalens
+      DEMO_MODE: ${DEMO_MODE:-true}
+      ADMIN_API_KEY: ${ADMIN_API_KEY:-local-commercial-admin}
+      KEYCLOAK_ISSUER: ${KEYCLOAK_ISSUER:-http://localhost:8180/realms/licitalens}
+      KEYCLOAK_AUDIENCE: ${KEYCLOAK_AUDIENCE:-licitalens-mobile}
+      SMTP_HOST: ${SMTP_HOST:-mailpit}
+      SMTP_PORT: ${SMTP_PORT:-1025}
+      SMTP_FROM: ${SMTP_FROM:-alerts@licitalens.local}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:8081,http://localhost:8082,http://localhost:19006}

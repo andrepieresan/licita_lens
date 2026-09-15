@@ -1,0 +1,18 @@
+# Exemplo de regras Prometheus (ajuste namespace/labels do seu cluster).
+groups:
+  - name: licitalens
+    rules:
+      - alert: LicitaLensGatewayDown
+        expr: up{job="licitalens-gateway"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: Gateway LicitaLens indisponível
+      - alert: LicitaLensReadyDegraded
+        expr: probe_success{job="licitalens-ready"} == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: /health/ready degradado (Postgres ou API)

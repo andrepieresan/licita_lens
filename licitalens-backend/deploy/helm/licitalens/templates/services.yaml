@@ -1,0 +1,40 @@
+{{- range $name, $service := .Values.services }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "licitalens.fullname" $ }}-{{ $name }}
+  labels: { app.kubernetes.io/name: {{ $name }}, app.kubernetes.io/part-of: licitalens }
+spec:
+  replicas: {{ $service.replicas }}
+  selector: { matchLabels: { app.kubernetes.io/name: {{ $name }}, app.kubernetes.io/instance: {{ $.Release.Name }} } }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: {{ $name }}, app.kubernetes.io/instance: {{ $.Release.Name }}, app.kubernetes.io/part-of: licitalens }
+    spec:
+      securityContext: { runAsNonRoot: true }
+      containers:
+        - name: {{ $name }}
+          image: "{{ $.Values.image.repository }}-{{ $service.command }}:{{ $.Values.image.tag }}"
+          imagePullPolicy: {{ $.Values.image.pullPolicy }}
+          ports: [{ name: http, containerPort: {{ $service.port }} }]
+          env:
+            - { name: PORT, value: {{ $service.port | quote }} }
+            - { name: DEMO_MODE, value: {{ $.Values.config.demoMode | quote }} }
+            - { name: AI_PROVIDER, value: {{ $.Values.config.aiProvider | quote }} }
+          envFrom:
+            - secretRef: { name: {{ $.Values.secretName }} }
+          readinessProbe: { httpGet: { path: /health/ready, port: http }, initialDelaySeconds: 3, periodSeconds: 5 }
+          livenessProbe: { httpGet: { path: /health/live, port: http }, initialDelaySeconds: 10, periodSeconds: 10 }
+          resources: {{ toYaml $.Values.resources | nindent 12 }}
+          securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: ["ALL"] } }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "licitalens.fullname" $ }}-{{ $name }}
+spec:
+  selector: { app.kubernetes.io/name: {{ $name }}, app.kubernetes.io/instance: {{ $.Release.Name }} }
+  ports: [{ name: http, port: 80, targetPort: http }]
+{{- end }}
+

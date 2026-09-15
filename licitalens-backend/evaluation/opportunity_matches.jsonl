@@ -1,0 +1,4 @@
+{"id":"notebook-pr","profile":{"description":"notebooks e computadores corporativos","states":["PR"]},"opportunity":{"object":"aquisição de notebooks corporativos","state":"PR"},"expected_match":true,"minimum_score":70}
+{"id":"excluded-used","profile":{"description":"equipamentos novos","excluded_terms":["usado"]},"opportunity":{"object":"alienação de computadores usados","state":"PR"},"expected_match":false}
+{"id":"wrong-state","profile":{"description":"material hospitalar","states":["SP"]},"opportunity":{"object":"aquisição de luvas hospitalares","state":"AM"},"expected_match":false}
+

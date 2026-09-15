@@ -1,0 +1,7 @@
+.env
+.env.*
+!.env.commercial.example
+!.env.prod.example
+.env.commercial.local
+.data/backups/
+deploy/nginx/certs/

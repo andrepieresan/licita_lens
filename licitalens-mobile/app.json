@@ -1,0 +1,25 @@
+{
+  "expo": {
+    "name": "LicitaLens",
+    "slug": "licitalens",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "scheme": "licitalens",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "dev.licitalens.mobile"
+    },
+    "android": {
+      "package": "dev.licitalens.mobile"
+    },
+    "extra": {
+      "apiUrl": "http://localhost:8080"
+    },
+    "plugins": [
+      "expo-status-bar",
+      "expo-web-browser",
+      "expo-notifications"
+    ]
+  }
+}

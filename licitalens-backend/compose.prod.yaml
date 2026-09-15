@@ -1,0 +1,36 @@
+# Produção / staging: políticas de restart e pipeline de dados completo.
+# Uso: docker compose -f compose.yaml -f compose.commercial.yaml -f compose.prod.yaml ...
+name: licitalens
+
+x-restart: &restart
+  restart: unless-stopped
+
+services:
+  postgres:
+    <<: *restart
+  redpanda:
+    <<: *restart
+  minio:
+    <<: *restart
+  ingestion:
+    <<: *restart
+  procurement:
+    <<: *restart
+  gateway:
+    <<: *restart
+  notifications:
+    <<: *restart
+  keycloak:
+    <<: *restart
+  mailpit:
+    <<: *restart
+  nginx:
+    image: nginx:1.27-alpine
+    <<: *restart
+    ports: ["80:80", "443:443"]
+    volumes:
+      - ./deploy/nginx/licitalens.docker.conf:/etc/nginx/conf.d/default.conf:ro
+      - ../licitalens-mobile/dist:/usr/share/nginx/html/app:ro
+    depends_on:
+      gateway: { condition: service_started }
+      keycloak: { condition: service_started }

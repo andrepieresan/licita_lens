@@ -1,0 +1,33 @@
+.DS_Store
+.idea/
+.vscode/
+
+# Local environment and secrets
+.env
+.env.*
+!.env.*.example
+*.pem
+*.key
+
+# Local data and backups
+**/.data/
+**/backups/
+*.sql
+*.sql.gz
+
+# JavaScript / Expo
+**/node_modules/
+**/.expo/
+**/dist/
+**/web-build/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Go
+coverage.out
+*.test
+
+# Local certificates
+**/deploy/nginx/certs/
+

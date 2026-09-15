@@ -1,0 +1,418 @@
+openapi: 3.1.0
+info:
+  title: LicitaLens API
+  version: 0.1.0
+  description: API multiempresa para descoberta e análise explicável de oportunidades públicas.
+servers:
+  - url: http://localhost:8080
+security:
+  - oidc: []
+paths:
+  /health/ready:
+    get:
+      security: []
+      operationId: healthReady
+      responses:
+        "200": { description: Serviço pronto }
+  /v1/profiles:
+    get:
+      operationId: listProfiles
+      parameters: [{ $ref: "#/components/parameters/Organization" }]
+      responses:
+        "200":
+          description: Perfis da organização
+          content: { application/json: { schema: { $ref: "#/components/schemas/ProfilePage" } } }
+        default: { $ref: "#/components/responses/Error" }
+    post:
+      operationId: createProfile
+      parameters: [{ $ref: "#/components/parameters/Organization" }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/ProfileInput" } } }
+      responses:
+        "201":
+          description: Perfil criado
+          content: { application/json: { schema: { $ref: "#/components/schemas/Profile" } } }
+        default: { $ref: "#/components/responses/Error" }
+  /v1/profiles/{id}:
+    parameters:
+      - $ref: "#/components/parameters/Organization"
+      - { name: id, in: path, required: true, schema: { type: string } }
+    get:
+      operationId: getProfile
+      responses:
+        "200":
+          description: Perfil comercial
+          content: { application/json: { schema: { $ref: "#/components/schemas/Profile" } } }
+        default: { $ref: "#/components/responses/Error" }
+    put:
+      operationId: updateProfile
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/ProfileInput" } } }
+      responses:
+        "200":
+          description: Perfil atualizado
+          content: { application/json: { schema: { $ref: "#/components/schemas/Profile" } } }
+        default: { $ref: "#/components/responses/Error" }
+    delete:
+      operationId: deleteProfile
+      responses:
+        "204": { description: Perfil removido }
+        default: { $ref: "#/components/responses/Error" }
+  /v1/opportunities:
+    get:
+      operationId: listOpportunities
+      parameters:
+        - $ref: "#/components/parameters/Organization"
+        - { name: cursor, in: query, schema: { type: string } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
+        - { name: profile_id, in: query, schema: { type: string } }
+        - { name: state, in: query, schema: { type: string, minLength: 2, maxLength: 2 } }
+        - { name: min_score, in: query, schema: { type: integer, minimum: 0, maximum: 100 } }
+      responses:
+        "200":
+          description: Feed de oportunidades
+          content: { application/json: { schema: { $ref: "#/components/schemas/OpportunityPage" } } }
+        default: { $ref: "#/components/responses/Error" }
+  /v1/opportunities/{id}:
+    get:
+      operationId: getOpportunity
+      parameters:
+        - $ref: "#/components/parameters/Organization"
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Oportunidade
+          content: { application/json: { schema: { $ref: "#/components/schemas/Opportunity" } } }
+        default: { $ref: "#/components/responses/Error" }
+  /v1/opportunities/{id}/analysis:
+    post:
+      operationId: analyzeOpportunity
+      parameters:
+        - $ref: "#/components/parameters/Organization"
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [profile_id]
+              properties: { profile_id: { type: string } }
+      responses:
+        "200":
+          description: Análise determinística e explicação opcional
+          content: { application/json: { schema: { $ref: "#/components/schemas/Analysis" } } }
+        default: { $ref: "#/components/responses/Error" }
+  /v1/usage:
+    get:
+      operationId: getUsage
+      parameters: [{ $ref: "#/components/parameters/Organization" }]
+      responses:
+        "200": { description: Consumo e limites do plano }
+        default: { $ref: "#/components/responses/Error" }
+  /v1/account/organizations:
+    get:
+      operationId: listOrganizations
+      responses:
+        "200": { description: Organizações do usuário autenticado }
+        default: { $ref: "#/components/responses/Error" }
+  /v1/account/bootstrap:
+    post:
+      operationId: bootstrapOrganization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [organization_name]
+              properties: { organization_name: { type: string } }
+      responses:
+        "201": { description: Organização provisionada com trial }
+        default: { $ref: "#/components/responses/Error" }
+  /v1/billing/history:
+    get:
+      operationId: billingHistory
+      parameters: [{ $ref: "#/components/parameters/Organization" }]
+      responses:
+        "200": { description: Histórico de assinatura da organização }
+        default: { $ref: "#/components/responses/Error" }
+  /v1/billing/checkout:
+    post:
+      operationId: billingCheckout
+      parameters: [{ $ref: "#/components/parameters/Organization" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [plan]
+              properties: { plan: { type: string, enum: [essential, pro] } }
+      responses:
+        "200": { description: URL de checkout Stripe }
+        default: { $ref: "#/components/responses/Error" }
+  /v1/billing/portal:
+    post:
+      operationId: billingPortal
+      parameters: [{ $ref: "#/components/parameters/Organization" }]
+      responses:
+        "200": { description: URL do portal Stripe }
+        default: { $ref: "#/components/responses/Error" }
+  /v1/auth/signup:
+    post:
+      security: []
+      operationId: authSignup
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password, full_name, organization_name, plan]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string, minLength: 8 }
+                full_name: { type: string }
+                organization_name: { type: string }
+                plan: { type: string, enum: [essential, pro] }
+      responses:
+        "201": { description: Conta, organização e sessão JWT }
+        default: { $ref: "#/components/responses/Error" }
+  /v1/auth/login:
+    post:
+      security: []
+      operationId: authLogin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string }
+      responses:
+        "200": { description: Sessão JWT }
+        default: { $ref: "#/components/responses/Error" }
+  /v1/me:
+    get:
+      operationId: authMe
+      responses:
+        "200": { description: Organização ativa e assinatura }
+        default: { $ref: "#/components/responses/Error" }
+  /v1/deals:
+    get:
+      operationId: listDeals
+      parameters: [{ $ref: "#/components/parameters/Organization" }]
+      responses:
+        "200": { description: Pipeline comercial da organização }
+        default: { $ref: "#/components/responses/Error" }
+    post:
+      operationId: createDeal
+      parameters: [{ $ref: "#/components/parameters/Organization" }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/DealInput" } } }
+      responses:
+        "201": { description: Card criado }
+        "200": { description: Card já existente para a mesma licitação }
+        default: { $ref: "#/components/responses/Error" }
+  /v1/deals/{id}:
+    patch:
+      operationId: updateDeal
+      parameters:
+        - $ref: "#/components/parameters/Organization"
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/DealPatch" } } }
+      responses:
+        "200": { description: Card atualizado }
+        default: { $ref: "#/components/responses/Error" }
+  /v1/deals/{id}/followups:
+    get:
+      operationId: listDealFollowUps
+      parameters:
+        - $ref: "#/components/parameters/Organization"
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200": { description: Histórico de follow-ups }
+        default: { $ref: "#/components/responses/Error" }
+    post:
+      operationId: addDealFollowUp
+      parameters:
+        - $ref: "#/components/parameters/Organization"
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [note]
+              properties:
+                note: { type: string }
+                scheduled_at: { type: string, format: date-time }
+      responses:
+        "201": { description: Follow-up registrado }
+        default: { $ref: "#/components/responses/Error" }
+  /v1/admin/overview:
+    get:
+      security: []
+      operationId: adminOverview
+      responses:
+        "200": { description: Indicadores comerciais agregados }
+  /v1/admin/organizations:
+    get:
+      security: []
+      operationId: adminOrganizations
+      responses:
+        "200": { description: Organizações e planos vigentes }
+  /v1/admin/subscription-history:
+    get:
+      security: []
+      operationId: adminSubscriptionHistory
+      responses:
+        "200": { description: Histórico global de assinaturas }
+components:
+  securitySchemes:
+    oidc:
+      type: openIdConnect
+      openIdConnectUrl: http://localhost:8180/realms/licitalens/.well-known/openid-configuration
+  parameters:
+    Organization:
+      name: X-Organization-ID
+      in: header
+      required: true
+      schema: { type: string, format: uuid }
+  responses:
+    Error:
+      description: Erro padronizado
+      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+  schemas:
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code: { type: string }
+        message: { type: string }
+        details: {}
+    ProfileInput:
+      type: object
+      required: [name, description]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 120 }
+        description: { type: string, minLength: 1, maxLength: 4000 }
+        keywords: { type: array, items: { type: string } }
+        categories: { type: array, items: { type: string } }
+        states: { type: array, items: { type: string, minLength: 2, maxLength: 2 } }
+        municipalities: { type: array, items: { type: string } }
+        modalities: { type: array, items: { type: integer } }
+        required_terms: { type: array, items: { type: string } }
+        excluded_terms: { type: array, items: { type: string } }
+        minimum_value_cents: { type: integer, format: int64, minimum: 0 }
+        maximum_value_cents: { type: integer, format: int64, minimum: 0 }
+    Profile:
+      allOf:
+        - $ref: "#/components/schemas/ProfileInput"
+        - type: object
+          required: [id, organization_id, created_at]
+          properties:
+            id: { type: string }
+            organization_id: { type: string }
+            created_at: { type: string, format: date-time }
+    ProfilePage:
+      type: object
+      required: [data]
+      properties:
+        data: { type: array, items: { $ref: "#/components/schemas/Profile" } }
+        next_cursor: { type: [string, "null"] }
+    Opportunity:
+      type: object
+      required: [id, source, source_id, object]
+      properties:
+        id: { type: string }
+        source: { type: string, enum: [pncp, compras_gov, demo] }
+        source_id: { type: string }
+        object: { type: string }
+        organization_name: { type: string }
+        state: { type: string }
+        municipality: { type: string }
+        modality_code: { type: integer }
+        estimated_value_cents: { type: integer, format: int64 }
+        published_at: { type: string, format: date-time }
+        proposal_deadline: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        source_url: { type: string, format: uri }
+    OpportunityPage:
+      type: object
+      required: [data]
+      properties:
+        data: { type: array, items: { $ref: "#/components/schemas/Opportunity" } }
+        next_cursor: { type: [string, "null"] }
+    ScoreBreakdown:
+      type: object
+      properties:
+        semantic: { type: number, minimum: 0, maximum: 1 }
+        recency: { type: number, minimum: 0, maximum: 1 }
+        financial: { type: number, minimum: 0, maximum: 1 }
+        competition: { type: number, minimum: 0, maximum: 1 }
+    Analysis:
+      type: object
+      required: [matched]
+      properties:
+        matched: { type: boolean }
+        match:
+          type: object
+          properties:
+            profile_id: { type: string }
+            opportunity_id: { type: string }
+            score: { type: integer, minimum: 0, maximum: 100 }
+            breakdown: { $ref: "#/components/schemas/ScoreBreakdown" }
+            evidence: { type: array, items: { type: string } }
+            explanation: { type: string }
+            prompt_version: { type: string }
+    DealStage:
+      type: string
+      enum: [prospecting, analysis, proposal, negotiation, won, lost]
+    DealInput:
+      type: object
+      required: [title]
+      properties:
+        title: { type: string }
+        opportunity_id: { type: string }
+        buyer_name: { type: string }
+        stage: { $ref: "#/components/schemas/DealStage" }
+        estimated_value_cents: { type: integer, format: int64 }
+    DealPatch:
+      type: object
+      properties:
+        title: { type: string }
+        buyer_name: { type: string }
+        stage: { $ref: "#/components/schemas/DealStage" }
+        estimated_value_cents: { type: integer, format: int64 }
+    Deal:
+      allOf:
+        - $ref: "#/components/schemas/DealInput"
+        - type: object
+          required: [id, organization_id, stage]
+          properties:
+            id: { type: string, format: uuid }
+            organization_id: { type: string, format: uuid }
+            last_follow_up_note: { type: string }
+            closed_at: { type: string, format: date-time }
+            created_at: { type: string, format: date-time }
+            updated_at: { type: string, format: date-time }
+    DealFollowUp:
+      type: object
+      required: [id, deal_id, note, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        deal_id: { type: string, format: uuid }
+        note: { type: string }
+        scheduled_at: { type: string, format: date-time }
+        created_at: { type: string, format: date-time }

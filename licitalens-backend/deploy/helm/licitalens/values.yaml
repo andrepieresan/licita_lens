@@ -1,0 +1,26 @@
+image:
+  repository: ghcr.io/example/licitalens
+  tag: latest
+  pullPolicy: IfNotPresent
+services:
+  gateway: { replicas: 2, port: 8080, command: gateway }
+  ingestion: { replicas: 1, port: 8080, command: ingestion }
+  tenancy: { replicas: 2, port: 8080, command: tenancy }
+  procurement: { replicas: 2, port: 8080, command: procurement }
+  intelligence: { replicas: 1, port: 8080, command: intelligence }
+  notifications: { replicas: 1, port: 8080, command: notifications }
+config:
+  demoMode: "false"
+  aiProvider: openai
+secretName: licitalens-secrets
+ingress:
+  enabled: false
+  className: nginx
+  host: api.licitalens.example
+  tls: true
+  tlsSecretName: licitalens-tls
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+resources:
+  requests: { cpu: 50m, memory: 64Mi }
+  limits: { cpu: 500m, memory: 256Mi }
