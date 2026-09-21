@@ -9,6 +9,7 @@ services:
   procurement: { replicas: 2, port: 8080, command: procurement }
   intelligence: { replicas: 1, port: 8080, command: intelligence }
   notifications: { replicas: 1, port: 8080, command: notifications }
+  billing: { replicas: 1, port: 8080, command: billing }
 config:
   demoMode: "false"
   aiProvider: openai

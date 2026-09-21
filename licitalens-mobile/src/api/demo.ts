@@ -1,4 +1,4 @@
-import { Analysis, LicitaLensAPI, Opportunity, Profile, ProfileInput, Usage } from "./client";
+import { Analysis, LicitaLensAPI, Opportunity, Profile, ProfileInput, PublicConfig, Usage } from "./client";
 import type { Deal, DealFollowUp, DealStage, NotificationPreferencesPayload, SessionPayload } from "./types";
 
 const now = Date.now();
@@ -23,6 +23,15 @@ export class DemoLicitaLensClient implements LicitaLensAPI {
     deadline_reminder: true,
   };
 
+	async getConfig(): Promise<PublicConfig> { return { deployment_mode: "demo", public_signup: true, billing: false, push: false, email: false, ai: false }; }
+	async logout() { return undefined; }
+	async requestEmailVerification(_email: string) {}
+	async verifyEmail(_token: string) {}
+	async requestPasswordRecovery(_email: string) {}
+	async resetPassword(_token: string, _password: string) {}
+	async exportAccount(): Promise<Record<string, unknown>> { return { exported_at: new Date().toISOString(), account: { email: "demo@licitalens.local" }, organizations: [] }; }
+	async deleteAccount() {}
+
   async listOpportunities() { return { data: opportunities, next_cursor: null }; }
   async listProfiles() { return { data: this.profile ? [this.profile] : [], next_cursor: null }; }
   async createProfile(input: ProfileInput) { this.profile = this.makeProfile(input); return this.profile; }
@@ -39,7 +48,7 @@ export class DemoLicitaLensClient implements LicitaLensAPI {
   async billingHistory() { return { data: [{ id: "demo-1", organization_id: "00000000-0000-0000-0000-000000000001", plan: "pro", status: "active", stripe_event_id: "demo_evt", recorded_at: new Date().toISOString() }] }; }
   async createCheckout(plan: "essential" | "pro") { return { url: `https://checkout.stripe.com/demo/${plan}` }; }
   async createPortal() { return { url: "https://billing.stripe.com/demo/portal" }; }
-  async signup(input: { email: string; password: string; full_name: string; organization_name: string; plan: "essential" | "pro" }): Promise<SessionPayload> {
+  async signup(input: { email: string; password: string; full_name: string; organization_name: string; plan: "essential" | "pro"; legal_accepted: true; terms_version: string; privacy_version: string }): Promise<SessionPayload> {
     return {
       access_token: "demo-token",
       account: { id: "demo-account", email: input.email, full_name: input.full_name },
@@ -48,7 +57,7 @@ export class DemoLicitaLensClient implements LicitaLensAPI {
     };
   }
   async login(input: { email: string; password: string }): Promise<SessionPayload> {
-    return this.signup({ ...input, full_name: "Demo", organization_name: "LicitaLens Demo", plan: "pro" });
+    return this.signup({ ...input, full_name: "Demo", organization_name: "LicitaLens Demo", plan: "pro", legal_accepted: true, terms_version: "demo", privacy_version: "demo" });
   }
   async getMe() {
     return {

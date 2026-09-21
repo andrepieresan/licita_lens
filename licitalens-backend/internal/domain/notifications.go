@@ -18,6 +18,7 @@ type NotificationRunResult struct {
 	SkippedDedup    int `json:"skipped_dedup"`
 	SkippedStale    int `json:"skipped_stale"`
 	Errors          int `json:"errors"`
+	Suppressed      int `json:"suppressed"`
 }
 
 func DealFollowUpDue(deal Deal, now time.Time) bool {

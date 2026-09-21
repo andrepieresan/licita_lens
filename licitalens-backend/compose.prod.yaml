@@ -1,5 +1,5 @@
-# Produção / staging: políticas de restart e pipeline de dados completo.
-# Uso: docker compose -f compose.yaml -f compose.commercial.yaml -f compose.prod.yaml ...
+# Ambiente legado de desenvolvimento/staging: não é a distribuição self-hosted pública.
+# Para instalar o produto, use deploy/self-hosted/compose.yaml.
 name: licitalens
 
 x-restart: &restart

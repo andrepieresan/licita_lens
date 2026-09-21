@@ -8,9 +8,10 @@ import (
 )
 
 type notificationMemory struct {
-	sent         map[string]struct{}
-	pushTokens   map[string][]string
+	sent          map[string]struct{}
+	pushTokens    map[string][]string
 	opportunityAt map[string]time.Time
+	failures      map[string]int
 }
 
 func (m *Memory) notificationState() *notificationMemory {
@@ -85,6 +86,23 @@ func (m *Memory) RecordNotificationAlert(_ context.Context, organizationID, kind
 	state := m.notificationState()
 	state.sent[alertKey(organizationID, kind, dedupeID)] = struct{}{}
 	return nil
+}
+
+func (m *Memory) RecordNotificationFailure(_ context.Context, organizationID, kind, dedupeID, _, _ string) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.notifications == nil {
+		m.notifications = &notificationMemory{sent: map[string]struct{}{}, pushTokens: map[string][]string{}, opportunityAt: map[string]time.Time{}, failures: map[string]int{}}
+	}
+	if m.notifications.failures == nil {
+		m.notifications.failures = map[string]int{}
+	}
+	key := organizationID + ":" + alertDedupeKey(kind, dedupeID)
+	m.notifications.failures[key]++
+	if m.notifications.failures[key] >= 5 {
+		m.notifications.sent[alertKey(organizationID, kind, dedupeID)] = struct{}{}
+	}
+	return m.notifications.failures[key], nil
 }
 
 func (m *Memory) RegisterPushToken(_ context.Context, organizationID, token string) error {

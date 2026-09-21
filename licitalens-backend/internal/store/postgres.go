@@ -29,6 +29,21 @@ func (p *Postgres) Close() { p.pool.Close() }
 func (p *Postgres) Ping(ctx context.Context) error {
 	return p.pool.Ping(ctx)
 }
+func (p *Postgres) IngestionCheckpoint(ctx context.Context, source, partition string) (string, error) {
+	var cursor *string
+	err := p.pool.QueryRow(ctx, `SELECT cursor FROM procurement.ingestion_checkpoints WHERE source=$1 AND partition_key=$2`, source, partition).Scan(&cursor)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	if cursor == nil {
+		return "", err
+	}
+	return *cursor, err
+}
+func (p *Postgres) SaveIngestionCheckpoint(ctx context.Context, source, partition, cursor string) error {
+	_, err := p.pool.Exec(ctx, `INSERT INTO procurement.ingestion_checkpoints(source,partition_key,cursor) VALUES($1,$2,$3) ON CONFLICT(source,partition_key) DO UPDATE SET cursor=EXCLUDED.cursor,updated_at=now()`, source, partition, cursor)
+	return err
+}
 
 func (p *Postgres) IsMember(ctx context.Context, organizationID, subjectID string) (bool, error) {
 	var exists bool
@@ -38,7 +53,7 @@ func (p *Postgres) IsMember(ctx context.Context, organizationID, subjectID strin
 
 func (p *Postgres) Subscription(ctx context.Context, organizationID string) (billing.Subscription, error) {
 	var value billing.Subscription
-	err := p.pool.QueryRow(ctx, `SELECT COALESCE(stripe_subscription_id,''), plan, status, updated_at FROM tenancy.subscriptions WHERE organization_id=$1::uuid`, organizationID).Scan(&value.ExternalID, &value.Plan, &value.Status, &value.UpdatedAt)
+	err := p.pool.QueryRow(ctx, `SELECT COALESCE(stripe_subscription_id,''), plan, status, current_period_end, updated_at FROM tenancy.subscriptions WHERE organization_id=$1::uuid`, organizationID).Scan(&value.ExternalID, &value.Plan, &value.Status, &value.CurrentPeriodEnd, &value.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return value, ErrNotFound
 	}
@@ -65,7 +80,15 @@ func (p *Postgres) ApplySubscription(ctx context.Context, organizationID string,
 	if err != nil {
 		return false, err
 	}
-	_, err = tx.Exec(ctx, `INSERT INTO tenancy.subscriptions(organization_id,stripe_subscription_id,plan,status,current_period_end,updated_at) VALUES ($1::uuid,NULLIF($2,''),$3,$4,NULL,$5) ON CONFLICT(organization_id) DO UPDATE SET stripe_subscription_id=EXCLUDED.stripe_subscription_id,plan=EXCLUDED.plan,status=EXCLUDED.status,updated_at=EXCLUDED.updated_at WHERE tenancy.subscriptions.updated_at < EXCLUDED.updated_at`, organizationID, subscription.ExternalID, subscription.Plan, subscription.Status, subscription.UpdatedAt)
+	var updated bool
+	err = tx.QueryRow(ctx, `INSERT INTO tenancy.subscriptions(organization_id,stripe_subscription_id,plan,status,current_period_end,updated_at) VALUES ($1::uuid,NULLIF($2,''),$3,$4,$5,$6) ON CONFLICT(organization_id) DO UPDATE SET stripe_subscription_id=EXCLUDED.stripe_subscription_id,plan=EXCLUDED.plan,status=EXCLUDED.status,current_period_end=EXCLUDED.current_period_end,updated_at=EXCLUDED.updated_at WHERE tenancy.subscriptions.updated_at < EXCLUDED.updated_at RETURNING true`, organizationID, subscription.ExternalID, subscription.Plan, subscription.Status, subscription.CurrentPeriodEnd, subscription.UpdatedAt).Scan(&updated)
+	if errors.Is(err, pgx.ErrNoRows) {
+		_, err = tx.Exec(ctx, `UPDATE tenancy.webhook_events SET processed_at=now() WHERE provider='stripe' AND external_id=$1`, eventID)
+		if err != nil {
+			return false, err
+		}
+		return false, tx.Commit(ctx)
+	}
 	if err != nil {
 		return false, err
 	}
@@ -123,13 +146,14 @@ func normalizeCommercialProfile(profile domain.CommercialProfile) domain.Commerc
 	}
 	return profile
 }
-func (p *Postgres) Profiles(organizationID string) []domain.CommercialProfile {
-	rows, err := p.pool.Query(context.Background(), profileQuery+` WHERE organization_id=$1 ORDER BY created_at`, organizationID)
+func (p *Postgres) Profiles(ctx context.Context, organizationID string) ([]domain.CommercialProfile, error) {
+	rows, err := p.pool.Query(ctx, profileQuery+` WHERE organization_id=$1 ORDER BY created_at`, organizationID)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	defer rows.Close()
-	return scanProfiles(rows)
+	values, err := scanProfiles(rows)
+	return values, err
 }
 func (p *Postgres) Profile(id, organizationID string) (domain.CommercialProfile, error) {
 	row := p.pool.QueryRow(context.Background(), profileQuery+` WHERE id=$1 AND organization_id=$2`, id, organizationID)
@@ -154,20 +178,48 @@ func (p *Postgres) Opportunity(id string) (domain.Opportunity, error) {
 	row := p.pool.QueryRow(context.Background(), opportunityQuery+` WHERE id=$1`, id)
 	return scanOpportunity(row)
 }
-func (p *Postgres) Opportunities() []domain.Opportunity {
-	rows, err := p.pool.Query(context.Background(), opportunityQuery+` ORDER BY published_at DESC LIMIT 100`)
+func (p *Postgres) Opportunities(ctx context.Context) ([]domain.Opportunity, error) {
+	all := []domain.Opportunity{}
+	for offset := 0; ; offset += 100 {
+		page, more, err := p.OpportunitiesPage(ctx, offset, 100)
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, page...)
+		if !more {
+			return all, nil
+		}
+	}
+}
+
+func (p *Postgres) OpportunitiesPage(ctx context.Context, offset, limit int) ([]domain.Opportunity, bool, error) {
+	if offset < 0 {
+		offset = 0
+	}
+	if limit < 1 || limit > 100 {
+		return nil, false, errors.New("invalid opportunity page limit")
+	}
+	rows, err := p.pool.Query(ctx, opportunityQuery+` ORDER BY published_at DESC NULLS LAST, id DESC LIMIT $1 OFFSET $2`, limit+1, offset)
 	if err != nil {
-		return nil
+		return nil, false, err
 	}
 	defer rows.Close()
 	result := []domain.Opportunity{}
 	for rows.Next() {
 		value, err := scanOpportunity(rows)
-		if err == nil {
-			result = append(result, value)
+		if err != nil {
+			return nil, false, err
 		}
+		result = append(result, value)
 	}
-	return result
+	if err := rows.Err(); err != nil {
+		return nil, false, err
+	}
+	hasMore := len(result) > limit
+	if hasMore {
+		result = result[:limit]
+	}
+	return result, hasMore, nil
 }
 
 const profileQuery = `SELECT id::text,organization_id::text,name,description,keywords,categories,states,municipalities,modalities,required_terms,excluded_terms,minimum_value_cents,maximum_value_cents,created_at FROM tenancy.commercial_profiles`
@@ -183,7 +235,7 @@ func scanProfile(row rowScanner) (domain.CommercialProfile, error) {
 	}
 	return v, err
 }
-func scanProfiles(rows pgx.Rows) []domain.CommercialProfile {
+func scanProfiles(rows pgx.Rows) ([]domain.CommercialProfile, error) {
 	result := []domain.CommercialProfile{}
 	for rows.Next() {
 		value, err := scanProfile(rows)
@@ -191,7 +243,10 @@ func scanProfiles(rows pgx.Rows) []domain.CommercialProfile {
 			result = append(result, value)
 		}
 	}
-	return result
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 func scanOpportunity(row rowScanner) (domain.Opportunity, error) {
 	var v domain.Opportunity

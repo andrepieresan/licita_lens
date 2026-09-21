@@ -5,6 +5,8 @@ export type SessionPayload = {
   subscription: { plan: string; status: string; external_id?: string; updated_at?: string };
 };
 
+export type SignupPayload = SessionPayload | { verification_required: true; email: string; email_sent: boolean };
+
 export type DealStage = "prospecting" | "analysis" | "proposal" | "negotiation" | "won" | "lost";
 
 export type DealFollowUp = {

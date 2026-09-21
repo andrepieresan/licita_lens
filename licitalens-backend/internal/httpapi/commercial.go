@@ -119,13 +119,39 @@ func (s *Server) adminHistory(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"data": items})
 }
 
+func (s *Server) adminReconcileBilling(w http.ResponseWriter, r *http.Request) {
+	if s.stripe == nil || !s.stripe.Enabled() {
+		writeError(w, http.StatusServiceUnavailable, "billing_unconfigured", "Stripe não está configurado neste ambiente", nil)
+		return
+	}
+	items, err := s.stripe.ListSubscriptions(r.Context())
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "billing_reconciliation_failed", "não foi possível consultar o Stripe", nil)
+		return
+	}
+	processed, unchanged := 0, 0
+	for _, item := range items {
+		changed, err := s.store.ApplySubscription(r.Context(), item.OrganizationID, item.Subscription, item.EventID, fmtHash([]byte(item.EventID)))
+		if err != nil {
+			s.log.Error("reconcile Stripe subscription", "organization_id", item.OrganizationID, "subscription_id", item.Subscription.ExternalID, "error", err)
+			writeError(w, http.StatusInternalServerError, "billing_reconciliation_failed", "não foi possível persistir a reconciliação", nil)
+			return
+		}
+		if changed {
+			processed++
+		} else {
+			unchanged++
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]int{"checked": len(items), "processed": processed, "unchanged": unchanged})
+}
+
 func (s *Server) adminRunNotifications(w http.ResponseWriter, r *http.Request) {
 	worker := notifications.NewWorker(s.store, s.log, notifications.WorkerConfig{
 		DemoMode: s.demo,
 		SMTP: notifications.SMTPConfig{
-			Host: os.Getenv("SMTP_HOST"),
-			Port: os.Getenv("SMTP_PORT"),
-			From: os.Getenv("SMTP_FROM"),
+			Host: os.Getenv("SMTP_HOST"), Port: os.Getenv("SMTP_PORT"), From: os.Getenv("SMTP_FROM"),
+			User: os.Getenv("SMTP_USER"), Password: os.Getenv("SMTP_PASSWORD"), TLSMode: envOr("SMTP_TLS_MODE", "auto"),
 		},
 	})
 	result, err := worker.Run(r.Context())

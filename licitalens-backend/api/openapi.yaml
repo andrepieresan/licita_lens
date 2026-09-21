@@ -8,6 +8,14 @@ servers:
 security:
   - oidc: []
 paths:
+  /v1/config:
+    get:
+      security: []
+      operationId: publicConfig
+      responses:
+        "200":
+          description: Capacidades públicas da instalação
+          content: { application/json: { schema: { $ref: "#/components/schemas/PublicConfig" } } }
   /health/ready:
     get:
       security: []
@@ -171,15 +179,29 @@ paths:
           application/json:
             schema:
               type: object
-              required: [email, password, full_name, organization_name, plan]
+              required: [email, password, full_name, organization_name, plan, legal_accepted, terms_version, privacy_version]
               properties:
                 email: { type: string, format: email }
                 password: { type: string, minLength: 8 }
                 full_name: { type: string }
                 organization_name: { type: string }
                 plan: { type: string, enum: [essential, pro] }
+                legal_accepted: { type: boolean, enum: [true] }
+                terms_version: { type: string }
+                privacy_version: { type: string }
       responses:
         "201": { description: Conta, organização e sessão JWT }
+        "202":
+          description: Conta cloud criada e aguardando confirmação de e-mail
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [verification_required, email, email_sent]
+                properties:
+                  verification_required: { type: boolean, enum: [true] }
+                  email: { type: string, format: email }
+                  email_sent: { type: boolean }
         default: { $ref: "#/components/responses/Error" }
   /v1/auth/login:
     post:
@@ -196,7 +218,57 @@ paths:
                 email: { type: string, format: email }
                 password: { type: string }
       responses:
-        "200": { description: Sessão JWT }
+        "200": { description: Sessão JWT e cookies de sessão HttpOnly/CSRF para clientes web }
+        default: { $ref: "#/components/responses/Error" }
+  /v1/auth/logout:
+    post:
+      operationId: authLogout
+      description: Revoga as sessões JWT locais da conta e remove os cookies de sessão e CSRF do navegador.
+      responses:
+        "204": { description: Sessão encerrada }
+        default: { $ref: "#/components/responses/Error" }
+  /v1/auth/email-verification:
+    post:
+      security: []
+      operationId: requestEmailVerification
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [email], properties: { email: { type: string, format: email } } } } } }
+      responses:
+        "202": { description: Solicitação aceita sem revelar se a conta existe }
+  /v1/auth/verify-email:
+    post:
+      security: []
+      operationId: verifyEmail
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [token], properties: { token: { type: string } } } } } }
+      responses:
+        "204": { description: E-mail confirmado }
+        default: { $ref: "#/components/responses/Error" }
+  /v1/auth/password-recovery:
+    post:
+      security: []
+      operationId: requestPasswordRecovery
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [email], properties: { email: { type: string, format: email } } } } } }
+      responses:
+        "202": { description: Solicitação aceita sem revelar se a conta existe }
+  /v1/auth/password-reset:
+    post:
+      security: []
+      operationId: resetPassword
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [token, password], properties: { token: { type: string }, password: { type: string, minLength: 8 } } } } } }
+      responses:
+        "204": { description: Senha atualizada e sessões anteriores revogadas }
+        default: { $ref: "#/components/responses/Error" }
+  /v1/account/export:
+    get:
+      operationId: exportAccount
+      responses:
+        "200": { description: Exportação dos dados da conta e organizações }
+        default: { $ref: "#/components/responses/Error" }
+  /v1/account:
+    delete:
+      operationId: deleteAccount
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [confirmation], properties: { confirmation: { type: string, enum: [DELETE] } } } } } }
+      responses:
+        "204": { description: Conta e organizações próprias excluídas }
         default: { $ref: "#/components/responses/Error" }
   /v1/me:
     get:
@@ -278,6 +350,13 @@ paths:
       operationId: adminSubscriptionHistory
       responses:
         "200": { description: Histórico global de assinaturas }
+  /v1/admin/billing/reconcile:
+    post:
+      security: []
+      operationId: adminReconcileBilling
+      responses:
+        "200": { description: Reconciliação das assinaturas Stripe concluída }
+        default: { $ref: "#/components/responses/Error" }
 components:
   securitySchemes:
     oidc:
@@ -354,6 +433,16 @@ components:
       properties:
         data: { type: array, items: { $ref: "#/components/schemas/Opportunity" } }
         next_cursor: { type: [string, "null"] }
+    PublicConfig:
+      type: object
+      required: [deployment_mode, public_signup, billing, push, email, ai]
+      properties:
+        deployment_mode: { type: string, enum: [demo, self_hosted, cloud] }
+        public_signup: { type: boolean }
+        billing: { type: boolean }
+        push: { type: boolean }
+        email: { type: boolean }
+        ai: { type: boolean }
     ScoreBreakdown:
       type: object
       properties:

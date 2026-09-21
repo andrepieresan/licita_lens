@@ -1,6 +1,7 @@
 package billing
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,11 +14,12 @@ import (
 )
 
 type Stripe struct {
-	SecretKey   string
-	HTTP        *http.Client
-	SuccessURL  string
-	CancelURL   string
-	PortalURL   string
+	SecretKey      string
+	HTTP           *http.Client
+	APIBaseURL     string
+	SuccessURL     string
+	CancelURL      string
+	PortalURL      string
 	PriceEssential string
 	PricePro       string
 }
@@ -30,6 +32,7 @@ func NewStripeFromEnv() *Stripe {
 		PortalURL:      strings.TrimSpace(getenv("STRIPE_PORTAL_RETURN_URL")),
 		PriceEssential: strings.TrimSpace(getenv("STRIPE_PRICE_ESSENTIAL")),
 		PricePro:       strings.TrimSpace(getenv("STRIPE_PRICE_PRO")),
+		APIBaseURL:     "https://api.stripe.com",
 		HTTP:           &http.Client{Timeout: 15 * time.Second},
 	}
 }
@@ -93,7 +96,7 @@ func (s *Stripe) CreateCheckoutSession(input CheckoutInput) (string, error) {
 	var payload struct {
 		URL string `json:"url"`
 	}
-	if err := s.postForm("https://api.stripe.com/v1/checkout/sessions", values, &payload); err != nil {
+	if err := s.postForm(s.apiURL("/v1/checkout/sessions"), values, &payload); err != nil {
 		return "", err
 	}
 	if payload.URL == "" {
@@ -122,13 +125,105 @@ func (s *Stripe) CreatePortalSession(customerID string) (string, error) {
 	var payload struct {
 		URL string `json:"url"`
 	}
-	if err := s.postForm("https://api.stripe.com/v1/billing_portal/sessions", values, &payload); err != nil {
+	if err := s.postForm(s.apiURL("/v1/billing_portal/sessions"), values, &payload); err != nil {
 		return "", err
 	}
 	if payload.URL == "" {
 		return "", errors.New("stripe não retornou URL do portal")
 	}
 	return payload.URL, nil
+}
+
+func (s *Stripe) apiURL(path string) string {
+	base := strings.TrimRight(s.APIBaseURL, "/")
+	if base == "" {
+		base = "https://api.stripe.com"
+	}
+	return base + path
+}
+
+type ReconciledSubscription struct {
+	OrganizationID string
+	Subscription   Subscription
+	EventID        string
+}
+
+// ListSubscriptions obtains the current Stripe state for every subscription
+// carrying LicitaLens organization metadata. It is intended for an operator or
+// scheduled reconciler to repair missed webhooks.
+func (s *Stripe) ListSubscriptions(ctx context.Context) ([]ReconciledSubscription, error) {
+	if !s.Enabled() {
+		return nil, errors.New("stripe não configurado")
+	}
+	result := []ReconciledSubscription{}
+	startingAfter := ""
+	for {
+		query := url.Values{"status": {"all"}, "limit": {"100"}, "expand[]": {"data.items.data.price"}}
+		if startingAfter != "" {
+			query.Set("starting_after", startingAfter)
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.apiURL("/v1/subscriptions")+"?"+query.Encode(), nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Authorization", "Bearer "+s.SecretKey)
+		resp, err := s.HTTP.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+		resp.Body.Close()
+		if readErr != nil {
+			return nil, readErr
+		}
+		if resp.StatusCode/100 != 2 {
+			return nil, fmt.Errorf("stripe retornou %d ao reconciliar assinaturas", resp.StatusCode)
+		}
+		var page struct {
+			Data []struct {
+				ID               string            `json:"id"`
+				Status           string            `json:"status"`
+				CurrentPeriodEnd int64             `json:"current_period_end"`
+				Metadata         map[string]string `json:"metadata"`
+				Items            struct {
+					Data []struct {
+						Price struct {
+							LookupKey string            `json:"lookup_key"`
+							Metadata  map[string]string `json:"metadata"`
+						} `json:"price"`
+					} `json:"data"`
+				} `json:"items"`
+			} `json:"data"`
+			HasMore bool `json:"has_more"`
+		}
+		if err := json.Unmarshal(body, &page); err != nil {
+			return nil, fmt.Errorf("decode stripe subscriptions: %w", err)
+		}
+		for _, item := range page.Data {
+			organizationID := item.Metadata["organization_id"]
+			plan := item.Metadata["plan"]
+			if plan == "" && len(item.Items.Data) > 0 {
+				plan = item.Items.Data[0].Price.LookupKey
+				if plan == "" {
+					plan = item.Items.Data[0].Price.Metadata["plan"]
+				}
+			}
+			if organizationID == "" || item.ID == "" || item.Status == "" || plan == "" {
+				continue
+			}
+			var periodEnd *time.Time
+			if item.CurrentPeriodEnd > 0 {
+				value := time.Unix(item.CurrentPeriodEnd, 0).UTC()
+				periodEnd = &value
+			}
+			eventID := fmt.Sprintf("stripe-reconcile:%s:%s:%s:%d", item.ID, item.Status, plan, item.CurrentPeriodEnd)
+			result = append(result, ReconciledSubscription{OrganizationID: organizationID, Subscription: Subscription{ExternalID: item.ID, Plan: plan, Status: item.Status, CurrentPeriodEnd: periodEnd, UpdatedAt: time.Now().UTC()}, EventID: eventID})
+		}
+		if !page.HasMore || len(page.Data) == 0 {
+			return result, nil
+		}
+		startingAfter = page.Data[len(page.Data)-1].ID
+	}
 }
 
 func (s *Stripe) postForm(endpoint string, values url.Values, target any) error {

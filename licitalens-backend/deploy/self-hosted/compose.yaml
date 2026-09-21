@@ -1,0 +1,172 @@
+name: licitalens-selfhosted
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: licitalens
+      POSTGRES_USER: licitalens
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes: ["postgres-data:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U licitalens -d licitalens"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  migrate:
+    image: postgres:17-alpine
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes: ["./001_schema.psql:/migrations/001_schema.psql:ro"]
+    command: ["sh", "-ec", "until pg_isready -h postgres -U licitalens -d licitalens; do sleep 1; done; psql -v ON_ERROR_STOP=1 -h postgres -U licitalens -d licitalens -f /migrations/001_schema.psql"]
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  redpanda:
+    image: redpandadata/redpanda:v25.2.9
+    restart: unless-stopped
+    command: ["redpanda", "start", "--overprovisioned", "--smp", "1", "--memory", "1G", "--reserve-memory", "0M", "--node-id", "0", "--check=false", "--kafka-addr", "0.0.0.0:9092", "--advertise-kafka-addr", "redpanda:9092"]
+    volumes: ["redpanda-data:/var/lib/redpanda/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health --exit-when-healthy"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  redpanda-init:
+    image: redpandadata/redpanda:v25.2.9
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        rpk topic describe procurement.discovered.v1 -X brokers=redpanda:9092 >/dev/null 2>&1 ||
+          rpk topic create procurement.discovered.v1 -p 3 -r 1 -X brokers=redpanda:9092
+        rpk topic describe procurement.dead-letter.v1 -X brokers=redpanda:9092 >/dev/null 2>&1 ||
+          rpk topic create procurement.dead-letter.v1 -p 3 -r 1 -X brokers=redpanda:9092
+    depends_on:
+      redpanda: { condition: service_healthy }
+
+  minio:
+    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
+    restart: unless-stopped
+    command: server /data
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?set MINIO_ROOT_USER in .env}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD in .env}
+    volumes: ["minio-data:/data"]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  gateway:
+    build: { context: ../.., args: { SERVICE: gateway } }
+    restart: unless-stopped
+    volumes:
+      - ${BACKUP_STATUS_DIR:-./backups}:/backups:ro
+    environment:
+      PORT: 8080
+      DEPLOYMENT_MODE: self_hosted
+      DEMO_MODE: "false"
+      PUBLIC_SIGNUP: ${PUBLIC_SIGNUP:-false}
+      DATABASE_URL: postgres://licitalens:${POSTGRES_PASSWORD}@postgres:5432/licitalens
+      AUTH_JWT_SECRET: ${AUTH_JWT_SECRET:?set AUTH_JWT_SECRET in .env}
+      ADMIN_API_KEY: ${ADMIN_API_KEY:?set ADMIN_API_KEY in .env}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:8080}
+      APP_BASE_URL: ${APP_BASE_URL:-http://localhost:8080}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_FROM: ${SMTP_FROM:-}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_TLS_MODE: ${SMTP_TLS_MODE:-auto}
+      SMTP_TIMEOUT: ${SMTP_TIMEOUT:-15s}
+      BACKUP_STATUS_FILE: ${BACKUP_STATUS_FILE:-/backups/last-success}
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+
+  admin:
+    profiles: ["tools"]
+    build: { context: ../.., args: { SERVICE: admin } }
+    environment:
+      DATABASE_URL: postgres://licitalens:${POSTGRES_PASSWORD}@postgres:5432/licitalens
+      BOOTSTRAP_PASSWORD: ${BOOTSTRAP_PASSWORD:-}
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+
+  ingestion:
+    build: { context: ../.., args: { SERVICE: ingestion } }
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://licitalens:${POSTGRES_PASSWORD}@postgres:5432/licitalens
+      KAFKA_BROKERS: redpanda:9092
+      S3_ENDPOINT: minio:9000
+      S3_ACCESS_KEY: ${MINIO_ROOT_USER}
+      S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      S3_BUCKET: licitalens-raw
+      S3_SECURE: "false"
+      PNCP_BASE_URL: ${PNCP_BASE_URL:-}
+      SYNC_INTERVAL: ${SYNC_INTERVAL:-5m}
+      PNCP_INITIAL_DAYS: ${PNCP_INITIAL_DAYS:-7}
+      PNCP_LOOKBACK_DAYS: ${PNCP_LOOKBACK_DAYS:-2}
+      PNCP_MAX_RECOVERY_DAYS: ${PNCP_MAX_RECOVERY_DAYS:-30}
+      PNCP_RECENT_PAGES: ${PNCP_RECENT_PAGES:-3}
+      PNCP_MODALITIES: ${PNCP_MODALITIES:-6}
+      PNCP_REQUEST_TIMEOUT: ${PNCP_REQUEST_TIMEOUT:-30s}
+      PNCP_MAX_ATTEMPTS: ${PNCP_MAX_ATTEMPTS:-3}
+      PNCP_RETRY_DELAY: ${PNCP_RETRY_DELAY:-500ms}
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      redpanda-init: { condition: service_completed_successfully }
+      minio: { condition: service_healthy }
+
+  procurement:
+    build: { context: ../.., args: { SERVICE: procurement } }
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://licitalens:${POSTGRES_PASSWORD}@postgres:5432/licitalens
+      KAFKA_BROKERS: redpanda:9092
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      redpanda-init: { condition: service_completed_successfully }
+
+  notifications:
+    build: { context: ../.., args: { SERVICE: notifications } }
+    restart: unless-stopped
+    environment:
+      NOTIFICATIONS_WORKER: "true"
+      DEPLOYMENT_MODE: self_hosted
+      DEMO_MODE: "false"
+      DATABASE_URL: postgres://licitalens:${POSTGRES_PASSWORD}@postgres:5432/licitalens
+      AUTH_JWT_SECRET: ${AUTH_JWT_SECRET:?set AUTH_JWT_SECRET in .env}
+      ADMIN_API_KEY: ${ADMIN_API_KEY:?set ADMIN_API_KEY in .env}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:8080}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_FROM: ${SMTP_FROM:-}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_TLS_MODE: ${SMTP_TLS_MODE:-auto}
+      SMTP_TIMEOUT: ${SMTP_TIMEOUT:-15s}
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+
+  web:
+    build:
+      context: ../../../licitalens-mobile
+      args:
+        EXPO_PUBLIC_LEGAL_OPERATOR_NAME: ${LEGAL_OPERATOR_NAME:-}
+        EXPO_PUBLIC_LEGAL_OPERATOR_DOCUMENT: ${LEGAL_OPERATOR_DOCUMENT:-}
+        EXPO_PUBLIC_LEGAL_SUPPORT_EMAIL: ${LEGAL_SUPPORT_EMAIL:-}
+        EXPO_PUBLIC_LEGAL_PRIVACY_EMAIL: ${LEGAL_PRIVACY_EMAIL:-}
+    restart: unless-stopped
+    ports: ["${HTTP_PORT:-8080}:8080"]
+    depends_on: [gateway]
+
+volumes:
+  postgres-data:
+  redpanda-data:
+  minio-data:

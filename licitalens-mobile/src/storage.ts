@@ -51,8 +51,9 @@ export async function savePreferences(value: Preferences) {
 }
 
 export async function saveSession(accessToken: string, organizationId: string, organizationName = "", accountEmail = "") {
-  await Promise.all([
-    AsyncStorage.setItem(keys.accessToken, accessToken),
+	const browser = typeof document !== "undefined";
+	await Promise.all([
+		browser ? AsyncStorage.removeItem(keys.accessToken) : AsyncStorage.setItem(keys.accessToken, accessToken),
     AsyncStorage.setItem(keys.organizationId, organizationId),
     AsyncStorage.setItem(keys.organizationName, organizationName),
     AsyncStorage.setItem(keys.accountEmail, accountEmail),

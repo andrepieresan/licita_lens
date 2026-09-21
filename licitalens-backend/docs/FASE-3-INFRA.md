@@ -1,13 +1,13 @@
-# Fase 3 — Infraestrutura e operação
+# Fase 3 — Ambiente legado de desenvolvimento e operação
 
-## Subir localmente (paridade com produção)
+## Subir localmente
 
 ```bash
 make phase3-up
 make phase3-verify
 ```
 
-Inclui: Postgres, Redpanda, MinIO, ingestão PNCP, procurement, gateway, worker de alertas, Keycloak, Mailpit, `restart: unless-stopped`, backup inicial e validação de readiness/métricas/dados PNCP.
+Inclui: Postgres, Redpanda, MinIO, ingestão PNCP, procurement, gateway, worker de alertas, Keycloak e Mailpit para desenvolvimento. A distribuição publicável é [`deploy/self-hosted`](../deploy/self-hosted/README.md); não use este Compose legado como modelo de exposição pública.
 
 ## Readiness
 
@@ -26,13 +26,13 @@ make backup-db
 make restore-db FILE=.data/backups/licitalens-....sql.gz   # interativo
 ```
 
-Agende `backup-postgres.sh` no cron do servidor (ex.: diário 03:00 UTC). Teste restore em ambiente isolado pelo menos uma vez por trimestre.
+`backup-postgres.sh` protege somente PostgreSQL. Para uma recuperação válida da distribuição, faça backup também de Redpanda e MinIO, restaure em ambiente isolado e grave o marcador de sucesso descrito no guia self-hosted. Teste restore em ambiente isolado pelo menos uma vez por trimestre.
 
 ## Domínio e TLS (nginx)
 
 1. DNS: `app.`, `api.`, `auth.` → IP do servidor.
 2. **nginx no host:** `deploy/nginx/licitalens.conf.example` → `/etc/nginx/sites-available/`, `certbot --nginx`.
-3. **nginx no Docker:** serviço `nginx` em `compose.prod.yaml` + `deploy/nginx/licitalens.docker.conf`.
+3. **nginx no Docker (legado):** serviço `nginx` em `compose.prod.yaml` + `deploy/nginx/licitalens.docker.conf`.
 4. Guia completo: [`deploy/nginx/README.md`](../deploy/nginx/README.md).
 5. Variáveis: `.env.prod.example` → `.env.prod.local` (`ALLOWED_ORIGINS`, `KEYCLOAK_ISSUER` com HTTPS público).
 
@@ -47,8 +47,8 @@ Ingress TLS e probes de readiness já estão no chart.
 
 ## Observabilidade
 
-- Métricas Prometheus: `GET /metrics` no gateway.
-- Regras exemplo: `deploy/prometheus/licitalens-alerts.yml`.
+- Métricas Prometheus: gateway em `GET /metrics`; workers na rede interna em `GET /metrics`.
+- Regras e scrape example: `deploy/prometheus/`.
 - Runbook: [`runbook.md`](runbook.md).
 
 ## Retenção sugerida
@@ -59,4 +59,4 @@ Ingress TLS e probes de readiness já estão no chart.
 | Raw PNCP (MinIO/S3) | 90 dias mínimo para replay |
 | Logs aplicação | 14–30 dias centralizados |
 
-Próximo passo comercial: **Fase 2** (`DEMO_MODE=false`, Stripe produção) sobre esta base.
+Próximo passo comercial: **Fase 2** (`DEPLOYMENT_MODE=cloud`, Stripe e SMTP reais) sobre staging, não sobre este ambiente legado.

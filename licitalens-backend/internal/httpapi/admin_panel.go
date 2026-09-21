@@ -60,6 +60,9 @@ var adminPanelHTML = []byte(`<!DOCTYPE html>
       if (adminKey.value.trim()) value['X-Admin-Key'] = adminKey.value.trim();
       return value;
     }
+    function escapeHtml(value) {
+      return String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
+    }
     async function load(path, init) {
       const response = await fetch(path, { ...(init || {}), headers: { ...headers(), ...((init && init.headers) || {}) } });
       const body = await response.json().catch(() => ({}));
@@ -80,11 +83,11 @@ var adminPanelHTML = []byte(`<!DOCTYPE html>
           ['Plano Essencial', overview.essential_plans],
           ['Plano Pro', overview.pro_plans],
           ['Eventos no histórico', overview.history_events],
-        ].map(([label, value]) => '<div class="card"><span class="muted">' + label + '</span><strong>' + value + '</strong></div>').join('');
+        ].map(([label, value]) => '<div class="card"><span class="muted">' + escapeHtml(label) + '</span><strong>' + escapeHtml(value) + '</strong></div>').join('');
         const orgData = await load('/v1/admin/organizations');
-        orgs.innerHTML = (orgData.data || []).map((item) => '<tr><td>' + item.name + '</td><td>' + (item.plan || '—') + '</td><td>' + (item.subscription_status || '—') + '</td><td>' + (item.pipeline_deals ?? 0) + '</td><td>' + item.member_count + '</td><td>' + fmtDate(item.created_at) + '</td></tr>').join('') || '<tr><td colspan="6">Nenhuma organização</td></tr>';
+        orgs.innerHTML = (orgData.data || []).map((item) => '<tr><td>' + escapeHtml(item.name) + '</td><td>' + escapeHtml(item.plan || '—') + '</td><td>' + escapeHtml(item.subscription_status || '—') + '</td><td>' + escapeHtml(item.pipeline_deals ?? 0) + '</td><td>' + escapeHtml(item.member_count) + '</td><td>' + escapeHtml(fmtDate(item.created_at)) + '</td></tr>').join('') || '<tr><td colspan="6">Nenhuma organização</td></tr>';
         const historyData = await load('/v1/admin/subscription-history');
-        history.innerHTML = (historyData.data || []).map((item) => '<tr><td>' + fmtDate(item.recorded_at) + '</td><td>' + (item.organization_name || item.organization_id) + '</td><td>' + item.plan + '</td><td>' + item.status + '</td><td>' + (item.stripe_event_id || '—') + '</td></tr>').join('') || '<tr><td colspan="5">Sem eventos ainda</td></tr>';
+        history.innerHTML = (historyData.data || []).map((item) => '<tr><td>' + escapeHtml(fmtDate(item.recorded_at)) + '</td><td>' + escapeHtml(item.organization_name || item.organization_id) + '</td><td>' + escapeHtml(item.plan) + '</td><td>' + escapeHtml(item.status) + '</td><td>' + escapeHtml(item.stripe_event_id || '—') + '</td></tr>').join('') || '<tr><td colspan="5">Sem eventos ainda</td></tr>';
       } catch (cause) {
         error.textContent = cause.message || 'Falha ao carregar painel';
       }

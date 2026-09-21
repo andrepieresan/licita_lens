@@ -45,25 +45,29 @@ make phase3-up
 
 [`docs/FASE-3-INFRA.md`](docs/FASE-3-INFRA.md) · conformidade no app: [`docs/FASE-4-CONFORMIDADE.md`](docs/FASE-4-CONFORMIDADE.md).
 
-Stack comercial (Postgres + admin + billing + seed demo):
+Stack comercial legada para desenvolvimento (Postgres + admin + billing + seed demo):
 
 ```bash
 make commercial-up
 ```
 
-Isso copia `.env.commercial.example` → `.env.commercial.local` (se ainda não existir), sobe Postgres/Keycloak/Gateway, aplica migrations `006`–`008` (histórico, contas SaaS, CRM) em volumes antigos, reaplica o seed demo e imprime URLs. Painel: `http://localhost:8080/admin` com `X-Admin-Key` definido no env local. Encerrar: `make commercial-down`.
+Isso copia `.env.commercial.example` → `.env.commercial.local` (se ainda não existir), sobe Postgres/Keycloak/Gateway, aplica as migrations comerciais versionadas em volumes antigos, reaplica o seed demo e imprime URLs. Painel: `http://localhost:8080/admin` com `X-Admin-Key` definido no env local. Encerrar: `make commercial-down`.
 
 Conta SaaS (JWT local + CRM):
 
-- `POST /v1/auth/signup` e `POST /v1/auth/login` — cadastro e sessão (header `Authorization: Bearer` nas demais rotas).
+- `POST /v1/auth/signup`, `POST /v1/auth/login` e `POST /v1/auth/logout` — cadastro e sessão. No navegador, a sessão é mantida em cookie `HttpOnly` com cookie CSRF separado; clientes nativos podem usar `Authorization: Bearer`.
+- confirmação de e-mail e recuperação de senha usam tokens expiradores de uso único; a interface reconhece os links gerados pela API.
+- `GET /v1/account/export` e `DELETE /v1/account` permitem exportar os dados vinculados e excluir a conta mediante confirmação explícita.
 - `GET /v1/me` — organização e status da assinatura.
 - `GET/POST /v1/deals`, `PATCH /v1/deals/{id}`, follow-ups em `/v1/deals/{id}/followups` — pipeline comercial (criação idempotente por `opportunity_id`).
 
+Cadastros, logins e fluxos de recuperação são limitados a dez tentativas por origem em quinze minutos. A distribuição self-hosted mantém o cadastro público fechado por padrão e fornece um comando local para criar o primeiro proprietário; habilite `PUBLIC_SIGNUP` apenas quando o cadastro aberto for intencional.
+
 App web SaaS: `cd ../licitalens-mobile && bun run commercial:web` (fluxo welcome → cadastro → pipeline Kanban → licitações com análise → perfil → plano).
 
-**Alertas (worker):** o serviço `notifications` lê `notification_preferences`, perfis e oportunidades **publicadas após o último ciclo** (cursor em `tenancy.notification_scan`; primeiro ciclo usa lookback de 24h), envia e-mail via SMTP (Mailpit em dev), push via Expo (`EXPO_ACCESS_TOKEN` opcional) e registra deduplicação em `notifications.deliveries`. Tokens Expo: `PUT /v1/account/push-token`. Follow-ups usam `next_follow_up_at` nos deals. Disparo manual: `POST /v1/admin/notifications/run` ou botão no painel admin. Mailpit: http://localhost:8025
+**Alertas (worker):** o serviço `notifications` lê `notification_preferences`, perfis e oportunidades **publicadas após o último ciclo** (cursor em `tenancy.notification_scan`; primeiro ciclo usa lookback de 24h), envia e-mail via SMTP (Mailpit em dev), push via Expo (`EXPO_ACCESS_TOKEN` opcional) e registra deduplicação em `notifications.deliveries`. SMTP tem timeout integral, modos `auto`, `starttls`, `implicit` e `disabled`, e recusa autenticação remota sem TLS. Tokens Expo: `PUT /v1/account/push-token`. Follow-ups usam `next_follow_up_at` nos deals. Disparo manual: `POST /v1/admin/notifications/run` ou botão no painel admin. Mailpit: http://localhost:8025
 
-Com `DEMO_MODE=false`, rode o gateway no host para OIDC (`KEYCLOAK_ISSUER` com `localhost:8180`): `make commercial-gateway-host`.
+Login próprio é o fluxo padrão. Keycloak/OIDC é uma integração opcional, mantida no ambiente comercial legado para desenvolvimento; quando usado localmente, `make commercial-gateway-host` permite que o gateway alcance um emissor em `localhost:8180`.
 
 ## IA
 
@@ -94,6 +98,8 @@ export ADMIN_API_KEY=change-me
 
 - `POST /v1/billing/checkout` e `POST /v1/billing/portal` criam sessões Stripe para a organização ativa.
 - `GET /v1/billing/history` retorna o histórico persistido em `tenancy.subscription_history`.
+- `POST /v1/admin/billing/reconcile` consulta o estado atual do Stripe e reaplica assinaturas com metadados de organização; use-o por agendamento administrativo para reparar webhooks perdidos. A operação é idempotente por assinatura, plano, status e período.
+- O comando `billing` executa essa reconciliação automaticamente no modo `cloud`; configure `STRIPE_RECONCILE_INTERVAL` (padrão: `1h`) e mantenha uma única réplica.
 - `POST /v1/account/bootstrap` cria organização, membership `owner` e assinatura `trialing`.
 - Painel interno em `GET /admin` (APIs `/v1/admin/*`, header `X-Admin-Key`; em `DEMO_MODE=true` a chave é opcional).
 
@@ -111,8 +117,12 @@ Aplique a migration `db/postgres/006_subscription_history.sql` ao subir PostgreS
 
 ## Limites da primeira entrega
 
-Com `DATABASE_URL`, a API usa PostgreSQL e o serviço `procurement` consome eventos `procurement.discovered.v1` do Kafka/Redpanda. Sem banco disponível, o gateway cai de forma explícita para o armazenamento em memória de demonstração. A ingestão PNCP já publica eventos e arquiva payloads localmente ou em S3 compatível quando configurada.
+Com `DATABASE_URL`, a API usa PostgreSQL e o serviço `procurement` consome eventos `procurement.discovered.v1` do Kafka/Redpanda. Eventos inválidos são persistidos em `procurement.dead-letter.v1` antes da confirmação do offset. Fora do modo `demo`, uma dependência crítica ausente interrompe a inicialização; armazenamento em memória é exclusivo da demonstração. A ingestão PNCP publica eventos e arquiva payloads localmente ou em S3 compatível quando configurada. Leituras do PNCP têm timeout e retry exponencial configuráveis, e os checkpoints de página e de dia avançam somente depois do arquivamento e publicação. Após reinício, o worker recupera automaticamente os dias pendentes até `PNCP_MAX_RECOVERY_DAYS` (ou sem limite quando `0`) e mantém uma janela recente para atualizações atrasadas. A prontidão dos workers consulta o PostgreSQL e o primeiro ciclo aplicável.
 
-Ainda faltam, para produção, os itens de fechamento descritos em [`docs/PRODUCT-ROADMAP.md`](docs/PRODUCT-ROADMAP.md): dados completos de itens/contratos/fornecedores, persistência analítica quando o dashboard estiver pronto, provedores de notificação operacionais e infraestrutura definitiva. O gateway já valida a associação do `subject` autenticado à organização ativa no PostgreSQL quando o modo demo está desligado e agora falha cedo se a configuração crítica de produção estiver incompleta.
+Para uma operação cloud ainda são necessários credenciais e validação real dos provedores, domínio/HTTPS, coleta externa das métricas e publicação das imagens da release. O gateway valida a associação do `subject` autenticado à organização ativa no PostgreSQL quando o modo demo está desligado e falha cedo se a configuração crítica de produção estiver incompleta.
+
+O gateway expõe métricas Prometheus em `/metrics`; a distribuição self-hosted documenta também as métricas privadas de ingestão, alertas e idade do backup em [`deploy/self-hosted/README.md`](deploy/self-hosted/README.md).
+
+As regras e a configuração-base de scrape ficam em [`deploy/prometheus`](deploy/prometheus). O workflow [`release.yml`](../.github/workflows/release.yml) gera imagens `amd64` e `arm64` no GHCR e uma GitHub Release apenas quando uma tag `v*` for enviada para o repositório público.
 
 Não adicione credenciais, tokens ou arquivos `.env` ao repositório.

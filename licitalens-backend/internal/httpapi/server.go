@@ -10,29 +10,36 @@ import (
 	"io"
 	"log/slog"
 	"math"
+	"net"
 	"net/http"
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
 	"licitalens.dev/backend/internal/auth"
 	"licitalens.dev/backend/internal/billing"
 	"licitalens.dev/backend/internal/domain"
+	"licitalens.dev/backend/internal/observability"
 	"licitalens.dev/backend/internal/providers/ai"
 	"licitalens.dev/backend/internal/store"
 )
 
 type Server struct {
-	store    store.DataStore
-	ai       ai.Provider
-	log      *slog.Logger
-	demo     bool
-	auth     auth.Authenticator
-	stripe   *billing.Stripe
-	localJWT *auth.LocalJWT
-	metrics  *metrics
+	store        store.DataStore
+	ai           ai.Provider
+	log          *slog.Logger
+	demo         bool
+	mode         string
+	cloud        bool
+	publicSignup bool
+	auth         auth.Authenticator
+	stripe       *billing.Stripe
+	localJWT     *auth.LocalJWT
+	metrics      *metrics
+	authRate     *authRateLimiter
 }
 
 type metrics struct {
@@ -40,23 +47,61 @@ type metrics struct {
 	latency  atomic.Uint64 // nanos
 }
 
-func New(data store.DataStore, provider ai.Provider, authenticator auth.Authenticator, stripe *billing.Stripe, localJWT *auth.LocalJWT, logger *slog.Logger, demo bool) http.Handler {
-	s := &Server{store: data, ai: provider, auth: authenticator, stripe: stripe, localJWT: localJWT, log: logger, demo: demo, metrics: &metrics{}}
+type authRateLimiter struct {
+	mu       sync.Mutex
+	attempts map[string]authRateAttempt
+}
+
+type authRateAttempt struct {
+	started time.Time
+	count   int
+}
+
+func (l *authRateLimiter) allow(key string, now time.Time) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	entry := l.attempts[key]
+	if entry.started.IsZero() || now.Sub(entry.started) >= 15*time.Minute {
+		l.attempts[key] = authRateAttempt{started: now, count: 1}
+		return true
+	}
+	if entry.count >= 10 {
+		return false
+	}
+	entry.count++
+	l.attempts[key] = entry
+	return true
+}
+
+func New(data store.DataStore, provider ai.Provider, authenticator auth.Authenticator, stripe *billing.Stripe, localJWT *auth.LocalJWT, logger *slog.Logger, mode string) http.Handler {
+	if mode == "" {
+		mode = "demo"
+	}
+	s := &Server{store: data, ai: provider, auth: authenticator, stripe: stripe, localJWT: localJWT, log: logger, demo: mode == "demo", mode: mode, cloud: mode == "cloud", publicSignup: mode == "cloud" || os.Getenv("PUBLIC_SIGNUP") == "true", metrics: &metrics{}, authRate: &authRateLimiter{attempts: map[string]authRateAttempt{}}}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health/live", s.live)
 	mux.HandleFunc("GET /health/ready", s.ready)
 	mux.HandleFunc("GET /metrics", s.metricsEndpoint)
+	mux.HandleFunc("GET /v1/config", s.config)
 	mux.HandleFunc("GET /v1/admin/overview", s.adminOverview)
 	mux.HandleFunc("GET /v1/admin/organizations", s.adminOrganizations)
 	mux.HandleFunc("GET /v1/admin/subscription-history", s.adminHistory)
+	mux.HandleFunc("POST /v1/admin/billing/reconcile", s.adminReconcileBilling)
 	mux.HandleFunc("POST /v1/admin/notifications/run", s.adminRunNotifications)
 	mux.HandleFunc("GET /v1/account/organizations", s.listOrganizations)
 	mux.HandleFunc("POST /v1/account/bootstrap", s.bootstrapOrganization)
+	mux.HandleFunc("GET /v1/account/export", s.accountExport)
+	mux.HandleFunc("DELETE /v1/account", s.accountDelete)
 	mux.HandleFunc("GET /v1/billing/history", s.billingHistory)
 	mux.HandleFunc("POST /v1/billing/checkout", s.billingCheckout)
 	mux.HandleFunc("POST /v1/billing/portal", s.billingPortal)
 	mux.HandleFunc("POST /v1/auth/signup", s.authSignup)
 	mux.HandleFunc("POST /v1/auth/login", s.authLogin)
+	mux.HandleFunc("POST /v1/auth/logout", s.authLogout)
+	mux.HandleFunc("POST /v1/auth/verify-email", s.authVerifyEmail)
+	mux.HandleFunc("POST /v1/auth/email-verification", s.authVerificationRequest)
+	mux.HandleFunc("POST /v1/auth/password-recovery", s.authPasswordRecovery)
+	mux.HandleFunc("POST /v1/auth/password-reset", s.authPasswordReset)
 	mux.HandleFunc("GET /v1/me", s.authMe)
 	mux.HandleFunc("GET /v1/account/notification-preferences", s.getNotificationPreferences)
 	mux.HandleFunc("PATCH /v1/account/notification-preferences", s.patchNotificationPreferences)
@@ -98,11 +143,14 @@ func (s *Server) middleware(next http.Handler) http.Handler {
 		w.Header().Set("X-Request-ID", requestID)
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		s.setCORS(w, r)
+		if r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodPatch || r.Method == http.MethodDelete {
+			r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+		}
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
-		if strings.HasPrefix(r.URL.Path, "/health/") || r.URL.Path == "/metrics" || r.URL.Path == "/v1/webhooks/stripe" {
+		if strings.HasPrefix(r.URL.Path, "/health/") || r.URL.Path == "/metrics" || r.URL.Path == "/v1/config" || r.URL.Path == "/v1/webhooks/stripe" {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -112,6 +160,14 @@ func (s *Server) middleware(next http.Handler) http.Handler {
 			return
 		}
 		if publicAuthPath(r.URL.Path) {
+			if !s.authRate.allow(r.URL.Path+":"+authRateKey(r), time.Now().UTC()) {
+				writeError(w, http.StatusTooManyRequests, "auth_rate_limited", "aguarde alguns minutos antes de tentar novamente", nil)
+				return
+			}
+			if r.URL.Path == "/v1/auth/signup" && !s.demo && !s.publicSignup {
+				writeError(w, http.StatusForbidden, "signup_disabled", "o cadastro público está desativado neste ambiente", nil)
+				return
+			}
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -125,8 +181,14 @@ func (s *Server) middleware(next http.Handler) http.Handler {
 		}
 		organizationID := r.Header.Get("X-Organization-ID")
 		userID := ""
+		cookieAuth := false
 		if s.auth != nil {
 			token := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
+			if token == "" {
+				if cookie, err := r.Cookie("licitalens_session"); err == nil {
+					token, cookieAuth = cookie.Value, true
+				}
+			}
 			if token != "" {
 				identity, err := s.auth.Authenticate(r.Context(), token)
 				if err != nil {
@@ -136,6 +198,25 @@ func (s *Server) middleware(next http.Handler) http.Handler {
 					}
 				} else {
 					userID = identity.Subject
+					if !identity.IssuedAt.IsZero() {
+						active, activeErr := s.store.SessionActive(r.Context(), identity.Subject, identity.IssuedAt)
+						if activeErr != nil {
+							writeError(w, http.StatusInternalServerError, "session_validation_failed", "não foi possível validar a sessão", nil)
+							return
+						}
+						if !active {
+							writeError(w, http.StatusUnauthorized, "session_revoked", "sessão revogada", nil)
+							return
+						}
+						if s.cloud {
+							verified, verifyErr := s.store.EmailVerified(r.Context(), identity.Subject)
+							if verifyErr != nil || !verified {
+								writeError(w, http.StatusForbidden, "email_not_verified", "confirme seu e-mail antes de continuar", nil)
+								return
+							}
+						}
+						r = r.WithContext(withIssuedAt(r.Context(), identity.IssuedAt))
+					}
 				}
 			}
 		}
@@ -152,11 +233,18 @@ func (s *Server) middleware(next http.Handler) http.Handler {
 			writeError(w, http.StatusUnauthorized, "unauthorized", "autenticação é obrigatória", nil)
 			return
 		}
+		if cookieAuth && (r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodPatch || r.Method == http.MethodDelete) && !s.validCSRF(r) {
+			writeError(w, http.StatusForbidden, "csrf_invalid", "token CSRF inválido", nil)
+			return
+		}
 		if organizationID == "" && !accountRoute {
 			writeError(w, http.StatusUnauthorized, "unauthorized", "organização ativa é obrigatória", nil)
 			return
 		}
 		ctx := withSubject(r.Context(), userID)
+		if tokenIssuedAt := issuedAt(r); !tokenIssuedAt.IsZero() {
+			ctx = withIssuedAt(ctx, tokenIssuedAt)
+		}
 		if accountRoute {
 			next.ServeHTTP(w, r.WithContext(ctx))
 			return
@@ -172,13 +260,13 @@ func (s *Server) middleware(next http.Handler) http.Handler {
 				return
 			}
 		}
-		if !s.demo && !subscriptionExempt(r.URL.Path) {
+		if s.cloud && !subscriptionExempt(r.URL.Path) {
 			subscription, err := s.store.Subscription(ctx, organizationID)
 			if err != nil {
 				writeError(w, http.StatusPaymentRequired, "subscription_required", "uma assinatura ativa é obrigatória", nil)
 				return
 			}
-			if !subscriptionActive(subscription.Status) {
+			if !s.subscriptionActive(subscription) {
 				writeError(w, http.StatusPaymentRequired, "subscription_required", "uma assinatura ativa é obrigatória", map[string]any{"status": subscription.Status})
 				return
 			}
@@ -186,6 +274,59 @@ func (s *Server) middleware(next http.Handler) http.Handler {
 		}
 		ctx = context.WithValue(ctx, organizationKey, organizationID)
 		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+func authRateKey(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err == nil && host != "" {
+		// The supported deployments keep the API behind the bundled web proxy.
+		// Trust its forwarding header only when the direct peer is private or
+		// loopback, so all public users do not share the proxy's rate-limit key.
+		if peer := net.ParseIP(host); peer != nil && (peer.IsPrivate() || peer.IsLoopback()) {
+			if forwarded := strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-For"), ",")[0]); net.ParseIP(forwarded) != nil {
+				return forwarded
+			}
+		}
+		return host
+	}
+	return r.RemoteAddr
+}
+
+func (s *Server) validCSRF(r *http.Request) bool {
+	cookie, err := r.Cookie("licitalens_csrf")
+	return err == nil && cookie.Value != "" && r.Header.Get("X-CSRF-Token") == cookie.Value
+}
+
+func (s *Server) setSessionCookies(w http.ResponseWriter, r *http.Request, token string) {
+	secure := r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" || os.Getenv("COOKIE_SECURE") == "true"
+	base := http.Cookie{Path: "/", Secure: secure, SameSite: http.SameSiteLaxMode, MaxAge: int((24 * time.Hour).Seconds())}
+	http.SetCookie(w, &http.Cookie{Name: "licitalens_session", Value: token, HttpOnly: true, Path: base.Path, Secure: base.Secure, SameSite: base.SameSite, MaxAge: base.MaxAge})
+	http.SetCookie(w, &http.Cookie{Name: "licitalens_csrf", Value: newID(), HttpOnly: false, Path: base.Path, Secure: base.Secure, SameSite: base.SameSite, MaxAge: base.MaxAge})
+}
+
+func (s *Server) clearSessionCookies(w http.ResponseWriter, r *http.Request) {
+	secure := r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" || os.Getenv("COOKIE_SECURE") == "true"
+	for _, name := range []string{"licitalens_session", "licitalens_csrf"} {
+		http.SetCookie(w, &http.Cookie{Name: name, Value: "", Path: "/", Secure: secure, SameSite: http.SameSiteLaxMode, MaxAge: -1, HttpOnly: name == "licitalens_session"})
+	}
+}
+
+func (s *Server) subscriptionActive(subscription billing.Subscription) bool {
+	if subscription.Status == "active" {
+		return true
+	}
+	return subscription.Status == "trialing" && (subscription.CurrentPeriodEnd == nil || subscription.CurrentPeriodEnd.After(time.Now().UTC()))
+}
+
+func (s *Server) config(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"deployment_mode": s.mode,
+		"public_signup":   s.demo || s.publicSignup,
+		"billing":         s.cloud && s.stripe != nil && s.stripe.Enabled(),
+		"push":            os.Getenv("EXPO_ACCESS_TOKEN") != "",
+		"email":           os.Getenv("SMTP_HOST") != "",
+		"ai":              s.ai != nil,
 	})
 }
 
@@ -242,10 +383,24 @@ func (s *Server) metricsEndpoint(w http.ResponseWriter, _ *http.Request) {
 	_, _ = io.WriteString(w, "licitalens_http_requests_total "+strconv.FormatUint(requests, 10)+"\n")
 	_, _ = io.WriteString(w, "# HELP licitalens_http_latency_seconds_total Soma das latências HTTP.\n# TYPE licitalens_http_latency_seconds_total counter\n")
 	_, _ = io.WriteString(w, "licitalens_http_latency_seconds_total "+strconv.FormatFloat(float64(latency)/float64(time.Second), 'f', 6, 64)+"\n")
+	backupStatus := os.Getenv("BACKUP_STATUS_FILE")
+	_, _ = io.WriteString(w, "# HELP licitalens_backup_configured Whether a backup status file is configured and readable.\n# TYPE licitalens_backup_configured gauge\n")
+	if completedAt, err := observability.BackupStatus(backupStatus); err == nil {
+		_, _ = io.WriteString(w, "licitalens_backup_configured 1\n")
+		_, _ = io.WriteString(w, "# HELP licitalens_backup_last_success_timestamp_seconds UTC timestamp recorded after the complete backup recovery set.\n# TYPE licitalens_backup_last_success_timestamp_seconds gauge\n")
+		_, _ = io.WriteString(w, "licitalens_backup_last_success_timestamp_seconds "+strconv.FormatInt(completedAt.Unix(), 10)+"\n")
+	} else {
+		_, _ = io.WriteString(w, "licitalens_backup_configured 0\n")
+	}
 }
 
 func (s *Server) listProfiles(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"data": s.store.Profiles(org(r)), "next_cursor": nil})
+	profiles, err := s.store.Profiles(r.Context(), org(r))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "profiles_unavailable", "não foi possível listar perfis", nil)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"data": profiles, "next_cursor": nil})
 }
 
 func (s *Server) createProfile(w http.ResponseWriter, r *http.Request) {
@@ -259,9 +414,16 @@ func (s *Server) createProfile(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnprocessableEntity, "validation_error", "name e description são obrigatórios", map[string]any{"fields": []string{"name", "description"}})
 		return
 	}
-	if len(s.store.Profiles(org(r))) >= entitlement(r).Profiles {
-		writeError(w, http.StatusConflict, "profile_limit_reached", "o plano não permite mais perfis", nil)
-		return
+	if s.cloud {
+		profiles, err := s.store.Profiles(r.Context(), org(r))
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "profiles_unavailable", "não foi possível validar o limite de perfis", nil)
+			return
+		}
+		if len(profiles) >= entitlement(r).Profiles {
+			writeError(w, http.StatusConflict, "profile_limit_reached", "o plano não permite mais perfis", nil)
+			return
+		}
 	}
 	profile.ID, profile.OrganizationID, profile.CreatedAt = newID(), org(r), time.Now().UTC()
 	if err := s.store.PutProfile(profile); err != nil {
@@ -313,27 +475,29 @@ func (s *Server) deleteProfile(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) listOpportunities(w http.ResponseWriter, r *http.Request) {
-	if !s.demo && r.URL.Query().Get("profile_id") != "" {
-		limits := entitlement(r)
-		allowed, _, err := s.store.ConsumeUsage(r.Context(), org(r), time.Now().UTC().Format("2006-01-02"), "daily_alert", limits.DailyAlerts)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "usage_unavailable", "não foi possível consultar alertas", nil)
-			return
-		}
-		if !allowed {
-			writeError(w, http.StatusTooManyRequests, "alert_quota_exceeded", "o limite diário de alertas foi atingido", nil)
-			return
-		}
-	}
-	values := s.store.Opportunities()
 	limit := 20
 	if requested, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil && requested > 0 && requested <= 100 {
 		limit = requested
 	}
-	if len(values) > limit {
-		values = values[:limit]
+	offset := 0
+	if cursor := r.URL.Query().Get("cursor"); cursor != "" {
+		parsed, err := strconv.Atoi(cursor)
+		if err != nil || parsed < 0 {
+			writeError(w, http.StatusBadRequest, "invalid_cursor", "cursor inválido", nil)
+			return
+		}
+		offset = parsed
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"data": values, "next_cursor": nil})
+	values, hasMore, err := s.store.OpportunitiesPage(r.Context(), offset, limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "opportunities_unavailable", "não foi possível listar oportunidades", nil)
+		return
+	}
+	var nextCursor any
+	if hasMore {
+		nextCursor = strconv.Itoa(offset + len(values))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"data": values, "next_cursor": nextCursor})
 }
 
 func (s *Server) getOpportunity(w http.ResponseWriter, r *http.Request) {
@@ -369,7 +533,7 @@ func (s *Server) analyzeOpportunity(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"matched": false})
 		return
 	}
-	if !s.demo {
+	if s.cloud {
 		allowed, _, err := s.store.ConsumeUsage(r.Context(), org(r), time.Now().UTC().Format("2006-01")+"-01", "ai_analysis", entitlement(r).MonthlyAI)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "usage_unavailable", "não foi possível consultar o consumo", nil)
@@ -397,7 +561,7 @@ func (s *Server) usage(w http.ResponseWriter, r *http.Request) {
 	limits := entitlement(r)
 	now := time.Now().UTC()
 	aiUsed, dailyUsed := 0, 0
-	if !s.demo {
+	if s.cloud {
 		var err error
 		aiUsed, err = s.store.UsageAmount(r.Context(), org(r), now.Format("2006-01")+"-01", "ai_analysis")
 		if err != nil {
@@ -410,9 +574,14 @@ func (s *Server) usage(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	profiles, err := s.store.Profiles(r.Context(), org(r))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "profiles_unavailable", "não foi possível consultar o uso de perfis", nil)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"plan":         plan,
-		"profiles":     map[string]int{"used": len(s.store.Profiles(org(r))), "limit": limits.Profiles},
+		"profiles":     map[string]int{"used": len(profiles), "limit": limits.Profiles},
 		"ai_analyses":  map[string]int{"used": aiUsed, "limit": limits.MonthlyAI},
 		"daily_alerts": map[string]int{"used": dailyUsed, "limit": limits.DailyAlerts},
 	})
@@ -434,10 +603,11 @@ func (s *Server) stripeWebhook(w http.ResponseWriter, r *http.Request) {
 		Created int64  `json:"created"`
 		Data    struct {
 			Object struct {
-				ID       string            `json:"id"`
-				Status   string            `json:"status"`
-				Metadata map[string]string `json:"metadata"`
-				Items    struct {
+				ID               string            `json:"id"`
+				Status           string            `json:"status"`
+				CurrentPeriodEnd int64             `json:"current_period_end"`
+				Metadata         map[string]string `json:"metadata"`
+				Items            struct {
 					Data []struct {
 						Price struct {
 							LookupKey string            `json:"lookup_key"`
@@ -473,7 +643,12 @@ func (s *Server) stripeWebhook(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_event", "evento não contém organização, plano ou status", nil)
 		return
 	}
-	changed, err := s.store.ApplySubscription(r.Context(), organizationID, billing.Subscription{ExternalID: event.Data.Object.ID, Plan: plan, Status: event.Data.Object.Status, UpdatedAt: created}, event.ID, fmtHash(payload))
+	var periodEnd *time.Time
+	if event.Data.Object.CurrentPeriodEnd > 0 {
+		value := time.Unix(event.Data.Object.CurrentPeriodEnd, 0).UTC()
+		periodEnd = &value
+	}
+	changed, err := s.store.ApplySubscription(r.Context(), organizationID, billing.Subscription{ExternalID: event.Data.Object.ID, Plan: plan, Status: event.Data.Object.Status, CurrentPeriodEnd: periodEnd, UpdatedAt: created}, event.ID, fmtHash(payload))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "webhook_processing_failed", "não foi possível processar o evento", nil)
 		return

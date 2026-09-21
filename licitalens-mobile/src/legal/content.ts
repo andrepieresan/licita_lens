@@ -2,6 +2,18 @@ export type LegalDoc = "terms" | "privacy";
 
 export const LEGAL_VERSION = "2026-03-01";
 
+const operatorName =
+  process.env.EXPO_PUBLIC_LEGAL_OPERATOR_NAME?.trim() ||
+  "o operador desta instalação";
+const operatorDocument =
+  process.env.EXPO_PUBLIC_LEGAL_OPERATOR_DOCUMENT?.trim() ||
+  "documento não informado";
+const supportEmail =
+  process.env.EXPO_PUBLIC_LEGAL_SUPPORT_EMAIL?.trim() ||
+  "canal de suporte informado pelo operador";
+const privacyEmail =
+  process.env.EXPO_PUBLIC_LEGAL_PRIVACY_EMAIL?.trim() || supportEmail;
+
 export const legalTitles: Record<LegalDoc, string> = {
   terms: "Termos de Uso",
   privacy: "Política de Privacidade",
@@ -18,7 +30,7 @@ O LicitaLens é uma plataforma privada de inteligência comercial que organiza d
 O cadastro é corporativo (B2B). Você declara poder vincular a organização informada e manter credenciais em sigilo.
 
 3. Planos e cobrança
-Assinaturas, trials e limites de uso são descritos no produto e na fatura (Stripe). Cancelamentos seguem as regras do plano contratado.
+Quando aplicáveis, assinaturas, períodos de avaliação e limites de uso são descritos no produto e na fatura do provedor de pagamento. Cancelamentos seguem as regras do plano contratado. Instalações self-hosted podem operar sem cobrança integrada.
 
 4. Uso permitido
 É proibido revender acesso, extrair dados em massa fora da API contratada, tentar burlar limites ou usar o serviço para fins ilegais.
@@ -36,12 +48,12 @@ Na extensão permitida pela lei, o LicitaLens não responde por decisões comerc
 Podemos atualizar estes termos; a versão vigente será indicada no app.
 
 9. Contato
-Dúvidas: suporte@seudominio.com (substitua pelo canal oficial).`,
+Dúvidas: ${supportEmail}.`,
 
   privacy: `POLÍTICA DE PRIVACIDADE — LICITALENS (versão ${LEGAL_VERSION})
 
 1. Controlador
-[RAZÃO SOCIAL], CNPJ [•], e-mail do encarregado: privacidade@seudominio.com.
+${operatorName}, identificação: ${operatorDocument}, contato de privacidade: ${privacyEmail}.
 
 2. Dados tratados
 - Cadastro: nome, e-mail, organização, credenciais (senha armazenada de forma segura).
@@ -62,7 +74,7 @@ Provedores de infraestrutura, e-mail, pagamentos e notificações push, sob cont
 Mantemos dados enquanto a conta estiver ativa e pelo prazo legal posterior ao encerramento, conforme política interna.
 
 7. Direitos do titular
-Acesso, correção, exclusão, portabilidade e revogação de consentimento: privacidade@seudominio.com.
+Acesso, correção, exclusão, portabilidade e revogação de consentimento: ${privacyEmail}.
 
 8. Segurança
 Medidas técnicas e organizacionais proporcionais ao risco; nenhum sistema é 100% invulnerável.

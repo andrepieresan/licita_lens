@@ -78,4 +78,4 @@ docker compose -f compose.yaml -f compose.commercial.yaml logs -f ingestion proc
 - `make phase1-verify` passa (≥1 linha `source=pncp` no banco e na API).
 - App `commercial:web` mostra licitações reais após perfil configurado.
 
-Próximo passo de produto: **Fase 2** em [`PRODUCT-ROADMAP.md`](PRODUCT-ROADMAP.md) (`DEMO_MODE=false`, Stripe, SMTP, domínio).
+Próximo passo de produto: **Fase 2** em [`PRODUCT-ROADMAP.md`](PRODUCT-ROADMAP.md) (`DEPLOYMENT_MODE=cloud`, Stripe, SMTP e domínio).

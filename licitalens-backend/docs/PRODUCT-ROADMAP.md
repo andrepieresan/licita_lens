@@ -32,7 +32,7 @@ Cada etapa deve preservar a fonte, o horário de atualização e a organização
 
 ### 1. Autenticação e segurança
 
-- OIDC/Keycloak obrigatório fora do modo demo.
+- Login próprio obrigatório fora do modo demo; Keycloak/OIDC é uma integração opcional.
 - JWT validado no gateway e associação do usuário à organização verificada no banco.
 - Nenhum endpoint privado aceita apenas headers de identidade enviados pelo cliente.
 - `ADMIN_API_KEY` obrigatório e separado para operações administrativas.
@@ -41,7 +41,7 @@ Cada etapa deve preservar a fonte, o horário de atualização e a organização
 - Isolamento entre organizações coberto por testes e logs com `request_id`.
 - Rate limit, rotação de chaves, backup criptografado e procedimento de incidente.
 
-O gateway agora falha na inicialização quando `DEMO_MODE=false` e faltam configurações críticas, e não cai silenciosamente para armazenamento em memória se o PostgreSQL estiver indisponível.
+O gateway agora falha na inicialização quando `DEPLOYMENT_MODE` é `self_hosted` ou `cloud` e faltam configurações críticas, e não cai silenciosamente para armazenamento em memória se o PostgreSQL estiver indisponível.
 
 ### 2. Infraestrutura definitiva
 
@@ -52,7 +52,7 @@ O gateway agora falha na inicialização quando `DEMO_MODE=false` e faltam confi
 - ClickHouse somente quando o dashboard analítico persistido estiver ativo; até lá, não tratar gráficos locais como analytics de produção.
 - Worker de notificações com SMTP e Expo configurados, deduplicação e monitoramento.
 - Kubernetes/Helm com ingress HTTPS, readiness real, recursos, autoscaling e logs centralizados.
-- Gateway expõe `/metrics` em formato Prometheus com contagem e latência acumulada de requisições; a coleta e os alertas ainda devem ser ligados no ambiente de produção.
+- Gateway e workers expõem métricas Prometheus para tráfego, ingestão, fila, DLQ, alertas, billing e backup. A coleta e o destino dos alertas ainda devem ser ligados no ambiente de produção.
 - Backups, restore testado e retenção definida.
 
 ### 3. Assinaturas, cobrança e gestão interna
@@ -86,4 +86,4 @@ A versão comercial só deve ser considerada fechada quando os quatro blocos aci
 | 1 — Dados PNCP | `make phase1-up` · [`FASE-1-DADOS-REAIS.md`](FASE-1-DADOS-REAIS.md) |
 | 3 — Infra | `make phase3-up` · [`FASE-3-INFRA.md`](FASE-3-INFRA.md) |
 | 4 — Conformidade (app + checklist) | [`FASE-4-CONFORMIDADE.md`](FASE-4-CONFORMIDADE.md) |
-| 2 — Cobrança/auth produção | `DEMO_MODE=false` + `.env.prod.example` (pendente validação em domínio real) |
+| 2 — Cobrança/auth produção | `DEPLOYMENT_MODE=cloud` + `.env.prod.example` (pendente validação em domínio real) |

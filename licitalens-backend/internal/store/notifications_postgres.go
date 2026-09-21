@@ -59,7 +59,7 @@ func (p *Postgres) NotificationAlertSent(ctx context.Context, organizationID, ki
 	err := p.pool.QueryRow(ctx, `
 SELECT EXISTS(
   SELECT 1 FROM notifications.deliveries
-  WHERE organization_id=$1::uuid AND opportunity_id=$2 AND status='sent'
+  WHERE organization_id=$1::uuid AND opportunity_id=$2 AND status IN ('sent','suppressed')
 )`, organizationID, alertDedupeKey(kind, dedupeID)).Scan(&exists)
 	return exists, err
 }
@@ -90,6 +90,27 @@ VALUES ($1::uuid, $2::uuid, $3, 'sent', $4, now())
 ON CONFLICT (channel_id, opportunity_id) DO UPDATE SET status='sent', provider_message_id=EXCLUDED.provider_message_id, updated_at=now()`,
 		organizationID, channelID, alertDedupeKey(kind, dedupeID), providerMessageID)
 	return err
+}
+
+func (p *Postgres) RecordNotificationFailure(ctx context.Context, organizationID, kind, dedupeID, destination, failure string) (int, error) {
+	channelType := "email"
+	if kind == "push" {
+		channelType = "expo_push"
+	}
+	channelID, err := p.ensureChannel(ctx, organizationID, channelType, destination)
+	if err != nil {
+		return 0, err
+	}
+	var attempts int
+	err = p.pool.QueryRow(ctx, `
+INSERT INTO notifications.deliveries(organization_id, channel_id, opportunity_id, status, attempts, last_error, updated_at)
+VALUES ($1::uuid, $2::uuid, $3, 'failed', 1, $4, now())
+ON CONFLICT (channel_id, opportunity_id) DO UPDATE SET
+  attempts=notifications.deliveries.attempts+1,
+  status=CASE WHEN notifications.deliveries.attempts+1 >= 5 THEN 'suppressed' ELSE 'failed' END,
+  last_error=EXCLUDED.last_error, updated_at=now()
+RETURNING attempts`, organizationID, channelID, alertDedupeKey(kind, dedupeID), failure).Scan(&attempts)
+	return attempts, err
 }
 
 func (p *Postgres) RegisterPushToken(ctx context.Context, organizationID, token string) error {

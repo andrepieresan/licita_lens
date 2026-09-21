@@ -22,6 +22,8 @@ services:
       SMTP_HOST: mailpit
       SMTP_PORT: "1025"
       SMTP_FROM: alerts@licitalens.local
+      SMTP_TLS_MODE: auto
+      SMTP_TIMEOUT: 15s
     depends_on:
       postgres: { condition: service_healthy }
       mailpit: { condition: service_started }
@@ -39,4 +41,8 @@ services:
       SMTP_HOST: ${SMTP_HOST:-mailpit}
       SMTP_PORT: ${SMTP_PORT:-1025}
       SMTP_FROM: ${SMTP_FROM:-alerts@licitalens.local}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_TLS_MODE: ${SMTP_TLS_MODE:-auto}
+      SMTP_TIMEOUT: ${SMTP_TIMEOUT:-15s}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:8081,http://localhost:8082,http://localhost:19006}

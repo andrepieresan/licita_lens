@@ -1,6 +1,8 @@
 # nginx — proxy do LicitaLens
 
-Dois modos:
+Este diretório serve ao ambiente legado de desenvolvimento/staging. Para uma instalação pública, siga primeiro [`../self-hosted/README.md`](../self-hosted/README.md) e termine TLS no proxy da sua infraestrutura.
+
+Dois modos legados:
 
 ## 1. nginx no host (VPS)
 
@@ -20,7 +22,7 @@ Upstreams padrão: app `:8081`, api `:8080`, auth `:8180`.
 
 ```bash
 cd licitalens-mobile
-EXPO_PUBLIC_API_URL=https://api.seudominio.com npx expo export --platform web
+EXPO_PUBLIC_API_URL=https://api.seudominio.com bunx expo export --platform web
 
 cd ../licitalens-backend
 # Edite deploy/nginx/licitalens.docker.conf (server_name)
@@ -31,14 +33,14 @@ Portas **80/443** no container `nginx`. App estático em `licitalens-mobile/dist
 
 TLS: monte `deploy/nginx/certs/` (fullchain + privkey) e duplique os blocos `listen 443 ssl` de `licitalens.conf.example` em `licitalens.docker.conf`, ou termine TLS no nginx do host apontando para `localhost:80` do container.
 
-## Variáveis do backend
+## Variáveis do backend (quando Keycloak for usado)
 
 ```env
 ALLOWED_ORIGINS=https://app.seudominio.com
 KEYCLOAK_ISSUER=https://auth.seudominio.com/realms/licitalens
 ```
 
-Keycloak atrás de proxy (compose):
+Keycloak atrás de proxy (opcional, compose):
 
 ```yaml
 keycloak:

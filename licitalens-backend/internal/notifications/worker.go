@@ -18,6 +18,7 @@ const minAlertScore = 55
 type WorkerConfig struct {
 	SMTP                SMTPConfig
 	DemoMode            bool
+	CloudMode           bool
 	MinMatchScore       int
 	ExpoAccessToken     string
 	OpportunityLookback time.Duration
@@ -25,10 +26,10 @@ type WorkerConfig struct {
 }
 
 type Worker struct {
-	store  store.DataStore
+	store    store.DataStore
 	dispatch *Dispatcher
-	log    *slog.Logger
-	cfg    WorkerConfig
+	log      *slog.Logger
+	cfg      WorkerConfig
 }
 
 func NewWorker(data store.DataStore, logger *slog.Logger, cfg WorkerConfig) *Worker {
@@ -47,7 +48,7 @@ func NewWorker(data store.DataStore, logger *slog.Logger, cfg WorkerConfig) *Wor
 	providers := []Provider{expoProvider}
 	if cfg.SMTP.Host != "" {
 		providers = append(providers, NewSMTP(cfg.SMTP))
-	} else {
+	} else if cfg.DemoMode {
 		providers = append(providers, NewLogProvider(Email))
 	}
 	return &Worker{
@@ -66,7 +67,10 @@ func (w *Worker) Run(ctx context.Context) (domain.NotificationRunResult, error) 
 	}
 	result.Organizations = len(targets)
 	now := time.Now().UTC()
-	opportunities := w.store.Opportunities()
+	opportunities, err := w.store.Opportunities(ctx)
+	if err != nil {
+		return result, err
+	}
 
 	for _, target := range targets {
 		if err := w.processTarget(ctx, target, opportunities, now, &result); err != nil {
@@ -78,7 +82,10 @@ func (w *Worker) Run(ctx context.Context) (domain.NotificationRunResult, error) 
 }
 
 func (w *Worker) processTarget(ctx context.Context, target domain.NotificationTarget, opportunities []domain.Opportunity, now time.Time, result *domain.NotificationRunResult) error {
-	profiles := w.store.Profiles(target.OrganizationID)
+	profiles, err := w.store.Profiles(ctx, target.OrganizationID)
+	if err != nil {
+		return err
+	}
 	if len(profiles) == 0 {
 		return nil
 	}
@@ -96,12 +103,6 @@ func (w *Worker) processTarget(ctx context.Context, target domain.NotificationTa
 		ConsentedAt:    now,
 	}
 
-	defer func() {
-		if advanceErr := w.store.AdvanceNotificationOpportunityCursor(ctx, target.OrganizationID, now); advanceErr != nil {
-			w.log.Warn("failed to advance opportunity cursor", "organization_id", target.OrganizationID, "error", advanceErr)
-		}
-	}()
-
 	for _, opportunity := range opportunities {
 		if !w.shouldAlertOpportunity(profiles, opportunity) {
 			continue
@@ -118,7 +119,7 @@ func (w *Worker) processTarget(ctx context.Context, target domain.NotificationTa
 			}
 			if sent {
 				result.SkippedDedup++
-			} else if w.cfg.DemoMode {
+			} else if w.cfg.DemoMode || !w.cfg.CloudMode {
 				if err := w.sendOpportunityEmail(ctx, target, emailChannel, opportunity, result); err != nil {
 					return err
 				}
@@ -127,14 +128,15 @@ func (w *Worker) processTarget(ctx context.Context, target domain.NotificationTa
 				if !ok {
 					limits = billing.Entitlements{DailyAlerts: 20}
 				}
+				if err := w.sendOpportunityEmail(ctx, target, emailChannel, opportunity, result); err != nil {
+					return err
+				}
 				allowed, _, err := w.store.ConsumeUsage(ctx, target.OrganizationID, now.Format("2006-01-02"), "daily_alert", limits.DailyAlerts)
 				if err != nil {
 					return err
 				}
 				if !allowed {
-					result.SkippedQuota++
-				} else if err := w.sendOpportunityEmail(ctx, target, emailChannel, opportunity, result); err != nil {
-					return err
+					return fmt.Errorf("daily alert quota exceeded after delivery")
 				}
 			}
 		}
@@ -168,14 +170,23 @@ func (w *Worker) processTarget(ctx context.Context, target domain.NotificationTa
 				}
 				lastProviderID, sendErr = w.dispatch.Send(ctx, pushChannel, message)
 				if sendErr != nil {
+					attempts, recordErr := w.store.RecordNotificationFailure(ctx, target.OrganizationID, "push", opportunity.ID, token, sendErr.Error())
+					if recordErr != nil {
+						return recordErr
+					}
 					result.Errors++
-					w.log.Warn("push alert failed", "organization_id", target.OrganizationID, "error", sendErr)
+					if attempts >= 5 {
+						result.Suppressed++
+					}
+					w.log.Warn("push alert failed", "organization_id", target.OrganizationID, "attempts", attempts, "error", sendErr)
 					break
 				}
 			}
 			if sendErr == nil {
 				dest := target.PushTokens[0]
-				_ = w.store.RecordNotificationAlert(ctx, target.OrganizationID, "push", opportunity.ID, dest, lastProviderID)
+				if err := w.store.RecordNotificationAlert(ctx, target.OrganizationID, "push", opportunity.ID, dest, lastProviderID); err != nil {
+					return err
+				}
 				result.OpportunitySent++
 			}
 		}
@@ -211,11 +222,23 @@ func (w *Worker) processTarget(ctx context.Context, target domain.NotificationTa
 		}
 		providerID, err := w.dispatch.Send(ctx, emailChannel, message)
 		if err != nil {
+			attempts, recordErr := w.store.RecordNotificationFailure(ctx, target.OrganizationID, "followup", dedupe, target.OwnerEmail, err.Error())
+			if recordErr != nil {
+				return recordErr
+			}
 			result.Errors++
+			if attempts >= 5 {
+				result.Suppressed++
+			}
 			continue
 		}
-		_ = w.store.RecordNotificationAlert(ctx, target.OrganizationID, "followup", dedupe, target.OwnerEmail, providerID)
+		if err := w.store.RecordNotificationAlert(ctx, target.OrganizationID, "followup", dedupe, target.OwnerEmail, providerID); err != nil {
+			return err
+		}
 		result.FollowUpSent++
+	}
+	if err := w.store.AdvanceNotificationOpportunityCursor(ctx, target.OrganizationID, now); err != nil {
+		return fmt.Errorf("advance opportunity cursor: %w", err)
 	}
 	return nil
 }
@@ -241,11 +264,20 @@ func (w *Worker) sendOpportunityEmail(ctx context.Context, target domain.Notific
 	}
 	providerID, err := w.dispatch.Send(ctx, emailChannel, message)
 	if err != nil {
+		attempts, recordErr := w.store.RecordNotificationFailure(ctx, target.OrganizationID, "opportunity", opportunity.ID, target.OwnerEmail, err.Error())
+		if recordErr != nil {
+			return recordErr
+		}
 		result.Errors++
-		w.log.Warn("email alert failed", "organization_id", target.OrganizationID, "error", err)
-		return nil
+		if attempts >= 5 {
+			result.Suppressed++
+		}
+		w.log.Warn("email alert failed", "organization_id", target.OrganizationID, "attempts", attempts, "error", err)
+		return err
 	}
-	_ = w.store.RecordNotificationAlert(ctx, target.OrganizationID, "opportunity", opportunity.ID, target.OwnerEmail, providerID)
+	if err := w.store.RecordNotificationAlert(ctx, target.OrganizationID, "opportunity", opportunity.ID, target.OwnerEmail, providerID); err != nil {
+		return err
+	}
 	result.OpportunitySent++
 	return nil
 }

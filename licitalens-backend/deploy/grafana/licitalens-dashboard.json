@@ -1,0 +1,60 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Backup: horas desde o último sucesso",
+      "targets": [{ "expr": "(time() - licitalens_backup_last_success_timestamp_seconds) / 3600", "refId": "A" }],
+      "fieldConfig": { "defaults": { "unit": "h", "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 26 }] } }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 6, "x": 0, "y": 0 }
+    },
+    {
+      "type": "stat",
+      "title": "Ingestão: minutos desde o último sucesso",
+      "targets": [{ "expr": "(time() - licitalens_ingestion_last_success_timestamp_seconds) / 60", "refId": "A" }],
+      "fieldConfig": { "defaults": { "unit": "m", "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 15 }] } }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 6, "x": 6, "y": 0 }
+    },
+    {
+      "type": "stat",
+      "title": "Lag da fila procurement",
+      "targets": [{ "expr": "licitalens_procurement_consumer_lag", "refId": "A" }],
+      "fieldConfig": { "defaults": { "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "orange", "value": 25 }, { "color": "red", "value": 100 }] } }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 0 }
+    },
+    {
+      "type": "stat",
+      "title": "Falhas de alerta nos últimos 15 min",
+      "targets": [{ "expr": "increase(licitalens_notifications_failures_total[15m])", "refId": "A" }],
+      "fieldConfig": { "defaults": { "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] } }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 0 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Falhas por componente",
+      "targets": [
+        { "expr": "increase(licitalens_ingestion_failures_total[5m])", "legendFormat": "ingestão", "refId": "A" },
+        { "expr": "increase(licitalens_notifications_failures_total[5m])", "legendFormat": "alertas", "refId": "B" },
+        { "expr": "increase(licitalens_billing_reconcile_failures_total[5m])", "legendFormat": "billing", "refId": "C" }
+      ],
+      "gridPos": { "h": 10, "w": 12, "x": 0, "y": 8 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Processamento e DLQ",
+      "targets": [
+        { "expr": "rate(licitalens_procurement_messages_total[5m])", "legendFormat": "processadas/s", "refId": "A" },
+        { "expr": "increase(licitalens_procurement_dead_letters_total[5m])", "legendFormat": "DLQ", "refId": "B" }
+      ],
+      "gridPos": { "h": 10, "w": 12, "x": 12, "y": 8 }
+    }
+  ],
+  "schemaVersion": 39,
+  "tags": ["licitalens"],
+  "templating": { "list": [] },
+  "time": { "from": "now-6h", "to": "now" },
+  "title": "LicitaLens Operations",
+  "uid": "licitalens-operations",
+  "version": 1
+}

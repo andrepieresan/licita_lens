@@ -9,6 +9,7 @@ import {
   Pressable,
   RefreshControl,
   SafeAreaView,
+  Share,
   ScrollView,
   StyleSheet,
   Switch,
@@ -61,7 +62,7 @@ function prefsToApi(preferences: Preferences): NotificationPreferencesPayload {
   };
 }
 
-type Phase = "welcome" | "login" | "signup" | "activate" | "onboarding" | "app";
+type Phase = "welcome" | "login" | "signup" | "verify-email" | "forgot-password" | "reset-password" | "activate" | "onboarding" | "app";
 type Tab = "overview" | "dashboard" | "radar" | "alerts" | "activity" | "profile" | "plan" | "settings";
 
 const NAV_ITEMS: Array<{ key: Tab; icon: string; label: string; description: string }> = [
@@ -73,6 +74,19 @@ const NAV_ITEMS: Array<{ key: Tab; icon: string; label: string; description: str
   { key: "profile", icon: "◎", label: "Perfil", description: "Aderência comercial" },
   { key: "settings", icon: "○", label: "Conta", description: "Preferências e acesso" },
 ];
+
+function accountLink(): { phase: "verify-email" | "reset-password"; token: string } | null {
+  if (typeof window === "undefined") return null;
+  const token = new URLSearchParams(window.location.search).get("token")?.trim() ?? "";
+  if (!token) return null;
+  if (window.location.pathname.endsWith("/verificar-email")) return { phase: "verify-email", token };
+  if (window.location.pathname.endsWith("/recuperar-senha")) return { phase: "reset-password", token };
+  return null;
+}
+
+function clearAccountLink() {
+  if (typeof window !== "undefined") window.history.replaceState({}, "", "/");
+}
 
 function tabTitle(tab: Tab) {
   return tab === "overview"
@@ -142,6 +156,7 @@ export default function SaasFlow() {
   const { width } = useWindowDimensions();
   const desktop = width >= 1024;
   const [phase, setPhase] = useState<Phase>("welcome");
+  const [accountFlowToken, setAccountFlowToken] = useState("");
   const [tab, setTab] = useState<Tab>("overview");
   const [accessToken, setAccessToken] = useState<string>();
   const [organizationId, setOrganizationId] = useState("");
@@ -154,6 +169,7 @@ export default function SaasFlow() {
   const [deals, setDeals] = useState<Deal[]>([]);
   const [usage, setUsage] = useState<Usage>();
   const [billingHistory, setBillingHistory] = useState<SubscriptionHistoryEntry[]>([]);
+	const [billingEnabled, setBillingEnabled] = useState(false);
   const [selectedOpportunity, setSelectedOpportunity] = useState<Opportunity>();
   const [analysis, setAnalysis] = useState<Analysis>();
   const [refreshing, setRefreshing] = useState(false);
@@ -264,10 +280,13 @@ export default function SaasFlow() {
 
   useEffect(() => {
     void loadLocalState().then(async (local) => {
-      if (!local.accessToken) {
-        setLoading(false);
-        return;
-      }
+		const link = accountLink();
+		if (link) {
+			setAccountFlowToken(link.token);
+			setPhase(link.phase);
+			setLoading(false);
+			return;
+		}
       setAccessToken(local.accessToken);
       setOrganizationId(local.organizationId ?? "");
       setOrganizationName(local.organizationName ?? "");
@@ -275,7 +294,7 @@ export default function SaasFlow() {
       setAccountEmail(local.accountEmail);
       setAccountName(local.accountEmail?.split("@")[0] ?? "");
       try {
-        const meClient = new LicitaLensClient({ baseUrl: apiUrl, organizationId: local.organizationId ?? "", accessToken: local.accessToken });
+		const meClient = new LicitaLensClient({ baseUrl: apiUrl, organizationId: local.organizationId ?? "", accessToken: local.accessToken });
         const me = await meClient.getMe();
         setOrganizationId(me.organization.id);
         setOrganizationName(me.organization.name);
@@ -311,17 +330,19 @@ export default function SaasFlow() {
     try {
       const profiles = await client.listProfiles();
       const profileId = profiles.data[0]?.id;
-      const [feed, dealPage, currentUsage, history] = await Promise.all([
+		const [feed, dealPage, currentUsage, history, config] = await Promise.all([
         client.listOpportunities(profileId),
         client.listDeals(),
         client.getUsage(),
         client.billingHistory().catch(() => ({ data: [] as SubscriptionHistoryEntry[] })),
+		client.getConfig(),
       ]);
       setProfile(profiles.data[0]);
       setOpportunities(feed.data);
       setDeals(dealPage.data);
       setUsage(currentUsage);
       setBillingHistory(history.data);
+		setBillingEnabled(config.billing);
       try {
         const remote = await client.getNotificationPreferences();
         const synced = prefsFromApi(remote);
@@ -463,7 +484,19 @@ export default function SaasFlow() {
   }
 
   if (phase === "login") {
-    return <LoginScreen onBack={() => setPhase("welcome")} onComplete={applySession} />;
+    return <LoginScreen onBack={() => setPhase("welcome")} onForgotPassword={() => setPhase("forgot-password")} onComplete={applySession} />;
+  }
+
+  if (phase === "verify-email") {
+		return <VerifyEmailScreen token={accountFlowToken} onComplete={() => { clearAccountLink(); setPhase("login"); }} />;
+  }
+
+  if (phase === "forgot-password") {
+		return <ForgotPasswordScreen onBack={() => setPhase("login")} />;
+  }
+
+  if (phase === "reset-password") {
+		return <ResetPasswordScreen token={accountFlowToken} onComplete={() => { clearAccountLink(); setPhase("login"); }} />;
   }
 
   if (phase === "activate") {
@@ -692,6 +725,7 @@ export default function SaasFlow() {
           usage={usage}
           organizationName={organizationName}
           history={billingHistory}
+			billingEnabled={billingEnabled}
           onCheckout={(plan) =>
             runAction(async () => {
               const { url } = await client.createCheckout(plan);
@@ -729,6 +763,7 @@ export default function SaasFlow() {
             }
           }}
           onSignOut={async () => {
+			await client.logout().catch(() => undefined);
             await clearSession();
             await resetGuideProgress();
             setGuideProgress({ active: false, stepIndex: 0, completed: [] });
@@ -741,6 +776,27 @@ export default function SaasFlow() {
           }}
           onOpenPlan={() => setTab("plan")}
           onOpenLegal={openLegal}
+			onExport={async () => {
+				const exported = await client.exportAccount();
+				const content = JSON.stringify(exported, null, 2);
+				if (typeof document !== "undefined") {
+					const href = URL.createObjectURL(new Blob([content], { type: "application/json" }));
+					const link = document.createElement("a");
+					link.href = href;
+					link.download = `licitalens-export-${new Date().toISOString().slice(0, 10)}.json`;
+					link.click();
+					URL.revokeObjectURL(href);
+				} else {
+					await Share.share({ message: content });
+				}
+			}}
+			onDelete={async () => {
+				await client.deleteAccount();
+				await clearSession();
+				setAccessToken(undefined);
+				setOrganizationId("");
+				setPhase("welcome");
+			}}
         />
       )}
       {legalModal}
@@ -1732,12 +1788,14 @@ function PlanScreen({
   usage,
   organizationName,
   history,
+	billingEnabled,
   onCheckout,
   onPortal,
 }: {
   usage: Usage;
   organizationName: string;
   history: SubscriptionHistoryEntry[];
+	billingEnabled: boolean;
   onCheckout: (plan: "essential" | "pro") => Promise<void>;
   onPortal: () => Promise<void>;
 }) {
@@ -1753,13 +1811,16 @@ function PlanScreen({
         <UsageMetric label="Análises IA" value={`${usage.ai_analyses.used}/${usage.ai_analyses.limit}`} />
         <UsageMetric label="Alertas" value={`${usage.daily_alerts.used}/${usage.daily_alerts.limit}`} />
       </View>
-      <View style={styles.sectionHeader}>
+      {billingEnabled ? <><View style={styles.sectionHeader}>
         <Text style={styles.sectionTitle}>Escolha o que faz sentido</Text>
         <Text style={styles.sectionCopy}>Você pode alterar ou gerenciar sua assinatura a qualquer momento.</Text>
       </View>
       <PrimaryButton label="Fazer upgrade para Pro" onPress={() => onCheckout("pro")} />
       <SecondaryButton label="Ver plano Essencial" onPress={() => onCheckout("essential")} />
-      <Pressable onPress={() => void onPortal()} style={styles.textAction}><Text style={styles.textActionLabel}>Gerenciar cobrança</Text></Pressable>
+      <Pressable onPress={() => void onPortal()} style={styles.textAction}><Text style={styles.textActionLabel}>Gerenciar cobrança</Text></Pressable></> : <View style={styles.sectionHeader}>
+        <Text style={styles.sectionTitle}>Instalação própria</Text>
+        <Text style={styles.sectionCopy}>Esta instalação não usa cobrança pelo LicitaLens.</Text>
+      </View>}
       <Text style={styles.sectionTitle}>Histórico</Text>
       {history.length === 0 ? (
         <Text style={styles.muted}>Nenhum evento registrado ainda.</Text>
@@ -1784,6 +1845,8 @@ function SettingsScreen({
   onOpenGuide,
   onOpenPlan,
   onOpenLegal,
+  onExport,
+  onDelete,
   highlightEmailSwitch,
 }: {
   accountName: string;
@@ -1794,8 +1857,13 @@ function SettingsScreen({
   onOpenGuide: () => void;
   onOpenPlan: () => void;
   onOpenLegal: (doc: LegalDoc) => void;
+  onExport: () => Promise<void>;
+  onDelete: () => Promise<void>;
   highlightEmailSwitch?: boolean;
 }) {
+	const [deleteConfirmation, setDeleteConfirmation] = useState("");
+	const [accountBusy, setAccountBusy] = useState(false);
+	const [accountMessage, setAccountMessage] = useState<string>();
   const alertOptions: Array<[keyof Preferences, string, string]> = [
     ["push", "Notificações no app", "Novas oportunidades com boa aderência ao perfil"],
     ["email", "Resumo por e-mail", "Seleção diária das licitações do radar"],
@@ -1850,7 +1918,21 @@ function SettingsScreen({
         <Text style={styles.sectionCopy}>Termos, LGPD e versão dos documentos (v{LEGAL_VERSION}).</Text>
         <SecondaryButton label="Termos de Uso" onPress={() => onOpenLegal("terms")} />
         <SecondaryButton label="Política de Privacidade" onPress={() => onOpenLegal("privacy")} />
+		<SecondaryButton label="Exportar meus dados" onPress={() => {
+			setAccountBusy(true); setAccountMessage(undefined);
+			void onExport().then(() => setAccountMessage("Exportação gerada com sucesso.")).catch((cause) => setAccountMessage(userFacingError(cause, "Não foi possível exportar os dados."))).finally(() => setAccountBusy(false));
+		}} />
       </View>
+	  <View style={styles.settingsPanel}>
+		<Text style={styles.sectionTitle}>Excluir conta</Text>
+		<Text style={styles.sectionCopy}>Esta ação remove a conta e as organizações próprias. Digite DELETE para confirmar.</Text>
+		<Field label="Confirmação" value={deleteConfirmation} onChangeText={setDeleteConfirmation} />
+		<PrimaryButton label={accountBusy ? "Processando…" : "Excluir definitivamente"} disabled={accountBusy || deleteConfirmation !== "DELETE"} onPress={() => {
+			setAccountBusy(true); setAccountMessage(undefined);
+			void onDelete().catch((cause) => setAccountMessage(userFacingError(cause, "Não foi possível excluir a conta."))).finally(() => setAccountBusy(false));
+		}} />
+		{accountMessage && <Text style={styles.muted}>{accountMessage}</Text>}
+	  </View>
       <Pressable onPress={onOpenPlan} style={styles.planShortcut}>
         <View style={styles.planShortcutCopy}>
           <Text style={styles.sectionTitle}>Plano e cobrança</Text>
@@ -1876,6 +1958,7 @@ function SignUpScreen({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
   const [acceptedLegal, setAcceptedLegal] = useState(false);
+	const [verificationEmail, setVerificationEmail] = useState("");
   return (
     <AuthShell title="Criar conta" copy="Cadastre sua empresa e comece o trial.">
       <Field label="Nome completo" value={form.full_name} onChangeText={(full_name) => setForm({ ...form, full_name })} />
@@ -1918,18 +2001,31 @@ function SignUpScreen({
         }
         try {
           const anon = new LicitaLensClient({ baseUrl: apiUrl, organizationId: "" });
-          await onComplete(await anon.signup({ ...form, email, full_name, organization_name }));
+          const result = await anon.signup({ ...form, email, full_name, organization_name, legal_accepted: true, terms_version: LEGAL_VERSION, privacy_version: LEGAL_VERSION });
+          if ("verification_required" in result) {
+			setVerificationEmail(result.email);
+            setError(result.email_sent
+              ? `Conta criada. Enviamos um link de confirmação para ${result.email}.`
+              : `Conta criada, mas o e-mail não pôde ser enviado. Tente reenviar a confirmação em instantes.`);
+            return;
+          }
+          await onComplete(result);
         } catch (cause) {
           setError(userFacingError(cause, "Falha no cadastro"));
         } finally { setBusy(false); }
       }} />
       {error && <Text style={styles.error}>{error}</Text>}
+	  {verificationEmail && <SecondaryButton label="Reenviar confirmação" onPress={() => {
+		setBusy(true);
+		const anon = new LicitaLensClient({ baseUrl: apiUrl, organizationId: "" });
+		void anon.requestEmailVerification(verificationEmail).then(() => setError("Se a conta estiver disponível, um novo link será enviado.")).catch((cause) => setError(userFacingError(cause, "Não foi possível reenviar a confirmação."))).finally(() => setBusy(false));
+	  }} />}
       <SecondaryButton label="Voltar" onPress={onBack} />
     </AuthShell>
   );
 }
 
-function LoginScreen({ onBack, onComplete }: { onBack: () => void; onComplete: (session: SessionPayload) => Promise<void> }) {
+function LoginScreen({ onBack, onForgotPassword, onComplete }: { onBack: () => void; onForgotPassword: () => void; onComplete: (session: SessionPayload) => Promise<void> }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
@@ -1958,10 +2054,70 @@ function LoginScreen({ onBack, onComplete }: { onBack: () => void; onComplete: (
         } finally { setBusy(false); }
       }} />
       {error && <Text style={styles.error}>{error}</Text>}
+	  <SecondaryButton label="Esqueci minha senha" onPress={onForgotPassword} />
       <View style={styles.authDivider}><View style={styles.authDividerLine} /><Text style={styles.authDividerText}>AINDA NÃO USA O LICITALENS?</Text><View style={styles.authDividerLine} /></View>
       <SecondaryButton label="Criar minha conta" onPress={onBack} />
     </AuthShell>
   );
+}
+
+function VerifyEmailScreen({ token, onComplete }: { token: string; onComplete: () => void }) {
+	const started = useRef(false);
+	const [message, setMessage] = useState("Confirmando seu e-mail…");
+	const [done, setDone] = useState(false);
+	useEffect(() => {
+		if (started.current) return;
+		started.current = true;
+		const anon = new LicitaLensClient({ baseUrl: apiUrl, organizationId: "" });
+		void anon.verifyEmail(token).then(() => {
+			setMessage("E-mail confirmado. Você já pode entrar.");
+			setDone(true);
+		}).catch((cause) => setMessage(userFacingError(cause, "Link inválido ou expirado.")));
+	}, [token]);
+	return (
+		<AuthShell title="Confirmação de e-mail" copy={message}>
+			{!done && <Text style={styles.muted}>Se o link expirou, volte ao cadastro e solicite um novo.</Text>}
+			<PrimaryButton label="Ir para o login" onPress={onComplete} />
+		</AuthShell>
+	);
+}
+
+function ForgotPasswordScreen({ onBack }: { onBack: () => void }) {
+	const [email, setEmail] = useState("");
+	const [busy, setBusy] = useState(false);
+	const [message, setMessage] = useState<string>();
+	return (
+		<AuthShell title="Recuperar acesso" copy="Informe seu e-mail para receber um link de redefinição de senha.">
+			<Field label="E-mail" value={email} onChangeText={setEmail} />
+			<PrimaryButton label={busy ? "Enviando…" : "Enviar link"} disabled={busy || !email.trim()} onPress={() => {
+				setBusy(true); setMessage(undefined);
+				const anon = new LicitaLensClient({ baseUrl: apiUrl, organizationId: "" });
+				void anon.requestPasswordRecovery(email.trim()).then(() => setMessage("Se a conta existir, as instruções serão enviadas.")).catch((cause) => setMessage(userFacingError(cause, "Não foi possível solicitar a recuperação."))).finally(() => setBusy(false));
+			}} />
+			{message && <Text style={styles.muted}>{message}</Text>}
+			<SecondaryButton label="Voltar ao login" onPress={onBack} />
+		</AuthShell>
+	);
+}
+
+function ResetPasswordScreen({ token, onComplete }: { token: string; onComplete: () => void }) {
+	const [password, setPassword] = useState("");
+	const [confirmation, setConfirmation] = useState("");
+	const [busy, setBusy] = useState(false);
+	const [message, setMessage] = useState<string>();
+	return (
+		<AuthShell title="Nova senha" copy="Defina uma nova senha para sua conta.">
+			<Field label="Nova senha" value={password} onChangeText={setPassword} secure />
+			<Field label="Confirmar senha" value={confirmation} onChangeText={setConfirmation} secure />
+			<PrimaryButton label={busy ? "Atualizando…" : "Atualizar senha"} disabled={busy || password.length < 8 || password !== confirmation} onPress={() => {
+				setBusy(true); setMessage(undefined);
+				const anon = new LicitaLensClient({ baseUrl: apiUrl, organizationId: "" });
+				void anon.resetPassword(token, password).then(() => { setMessage("Senha atualizada com sucesso."); setTimeout(onComplete, 800); }).catch((cause) => setMessage(userFacingError(cause, "Link inválido ou expirado."))).finally(() => setBusy(false));
+			}} />
+			{message && <Text style={styles.muted}>{message}</Text>}
+			<SecondaryButton label="Voltar ao login" onPress={onComplete} />
+		</AuthShell>
+	);
 }
 
 function ProfileOnboarding({

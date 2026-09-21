@@ -2,11 +2,14 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -19,13 +22,15 @@ import (
 
 func RunAPI() error {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
-	demo := env("DEMO_MODE", "true") == "true"
-	if !demo {
-		if err := validateProductionConfig(); err != nil {
-			return err
-		}
+	mode, err := deploymentMode()
+	if err != nil {
+		return err
 	}
-	data, closeStore, err := dataStore(logger)
+	demo := mode == "demo"
+	if err := validateDeploymentConfig(mode); err != nil {
+		return err
+	}
+	data, closeStore, err := dataStore(logger, demo)
 	if err != nil {
 		return err
 	}
@@ -44,7 +49,7 @@ func RunAPI() error {
 	} else {
 		authenticator = localJWT
 	}
-	server := &http.Server{Addr: ":" + env("PORT", "8080"), Handler: httpapi.New(data, provider, authenticator, billing.NewStripeFromEnv(), localJWT, logger, demo), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 60 * time.Second, IdleTimeout: 90 * time.Second}
+	server := &http.Server{Addr: ":" + env("PORT", "8080"), Handler: httpapi.New(data, provider, authenticator, billing.NewStripeFromEnv(), localJWT, logger, mode), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 60 * time.Second, IdleTimeout: 90 * time.Second}
 	stop, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 	go func() {
@@ -61,7 +66,7 @@ func RunAPI() error {
 	return err
 }
 
-func dataStore(logger *slog.Logger) (store.DataStore, func(), error) {
+func dataStore(logger *slog.Logger, demo bool) (store.DataStore, func(), error) {
 	if databaseURL := os.Getenv("DATABASE_URL"); databaseURL != "" {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
@@ -69,39 +74,163 @@ func dataStore(logger *slog.Logger) (store.DataStore, func(), error) {
 			logger.Info("using postgres persistence")
 			return database, database.Close, nil
 		}
-		if env("DEMO_MODE", "true") != "true" {
+		if !demo {
 			return nil, func() {}, fmt.Errorf("DATABASE_URL configurado, mas PostgreSQL não está disponível")
 		}
 		logger.Warn("postgres unavailable; falling back to memory demo store")
 	}
 	memory := store.NewMemory()
-	if env("DEMO_MODE", "true") == "true" {
+	if demo {
 		store.SeedDemo(memory)
 	}
 	return memory, func() {}, nil
 }
 
-func validateProductionConfig() error {
-	required := []string{"DATABASE_URL", "KEYCLOAK_ISSUER", "KEYCLOAK_AUDIENCE", "ADMIN_API_KEY", "ALLOWED_ORIGINS", "STRIPE_SECRET_KEY", "STRIPE_PRICE_ESSENTIAL", "STRIPE_PRICE_PRO", "STRIPE_WEBHOOK_SECRET", "STRIPE_SUCCESS_URL", "STRIPE_CANCEL_URL"}
+func deploymentMode() (string, error) {
+	mode := env("DEPLOYMENT_MODE", "")
+	if mode == "" {
+		if env("DEMO_MODE", "true") == "true" {
+			return "demo", nil
+		}
+		return "cloud", nil
+	}
+	if mode != "demo" && mode != "self_hosted" && mode != "cloud" {
+		return "", fmt.Errorf("DEPLOYMENT_MODE inválido: use demo, self_hosted ou cloud")
+	}
+	if legacy := os.Getenv("DEMO_MODE"); legacy != "" && (legacy == "true") != (mode == "demo") {
+		return "", fmt.Errorf("DEPLOYMENT_MODE e DEMO_MODE são contraditórios")
+	}
+	return mode, nil
+}
+
+func validateDeploymentConfig(mode string) error {
+	if mode == "demo" {
+		return nil
+	}
+	required := []string{"DATABASE_URL", "AUTH_JWT_SECRET", "ADMIN_API_KEY", "ALLOWED_ORIGINS"}
+	if mode == "cloud" {
+		required = append(required, "STRIPE_SECRET_KEY", "STRIPE_PRICE_ESSENTIAL", "STRIPE_PRICE_PRO", "STRIPE_WEBHOOK_SECRET", "STRIPE_SUCCESS_URL", "STRIPE_CANCEL_URL", "SMTP_HOST", "SMTP_FROM", "SMTP_TLS_MODE", "APP_BASE_URL")
+	}
 	for _, key := range required {
 		if env(key, "") == "" {
-			return fmt.Errorf("configuração de produção incompleta: %s é obrigatório", key)
+			return fmt.Errorf("configuração %s incompleta: %s é obrigatório", mode, key)
+		}
+	}
+	if unsafeDatabasePlaceholder(env("DATABASE_URL", "")) {
+		return fmt.Errorf("DATABASE_URL contém um valor de exemplo e não pode ser usado fora do modo demo")
+	}
+	if secret := env("AUTH_JWT_SECRET", ""); !secureSecret(secret, 32) || secret == "licitalens-local-dev-secret-change-me" {
+		return fmt.Errorf("AUTH_JWT_SECRET deve ter ao menos 32 caracteres aleatórios fora do modo demo")
+	}
+	if key := env("ADMIN_API_KEY", ""); !secureSecret(key, 24) {
+		return fmt.Errorf("ADMIN_API_KEY deve ter ao menos 24 caracteres aleatórios fora do modo demo")
+	}
+	if host := env("SMTP_HOST", ""); host != "" {
+		tlsMode := strings.ToLower(env("SMTP_TLS_MODE", "auto"))
+		if tlsMode != "auto" && tlsMode != "starttls" && tlsMode != "implicit" && tlsMode != "disabled" {
+			return fmt.Errorf("SMTP_TLS_MODE inválido: use auto, starttls, implicit ou disabled")
+		}
+		if mode == "cloud" && tlsMode != "starttls" && tlsMode != "implicit" {
+			return fmt.Errorf("SMTP_TLS_MODE deve exigir starttls ou implicit no modo cloud")
+		}
+		if (env("SMTP_USER", "") == "") != (env("SMTP_PASSWORD", "") == "") {
+			return fmt.Errorf("SMTP_USER e SMTP_PASSWORD devem ser configurados juntos")
+		}
+		if value := env("SMTP_TIMEOUT", ""); value != "" {
+			if timeout, err := time.ParseDuration(value); err != nil || timeout <= 0 {
+				return fmt.Errorf("SMTP_TIMEOUT deve ser uma duração positiva")
+			}
 		}
 	}
 	return nil
 }
 
-func RunHealth(service string) error {
+func secureSecret(value string, minimum int) bool {
+	value = strings.TrimSpace(value)
+	if len(value) < minimum {
+		return false
+	}
+	return !unsafePlaceholder(value)
+}
+
+func unsafePlaceholder(value string) bool {
+	lower := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(value), "_", "-"))
+	return strings.Contains(lower, "replace-with") || strings.Contains(lower, "change-me") || strings.Contains(lower, "changeme") || strings.Contains(lower, "example")
+}
+
+func unsafeDatabasePlaceholder(value string) bool {
+	lower := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(value), "_", "-"))
+	return strings.Contains(lower, "replace-with") || strings.Contains(lower, "change-me") || strings.Contains(lower, "changeme")
+}
+
+type HealthCheck struct {
+	Name  string
+	Check func(context.Context) error
+}
+
+// MetricsWriter appends Prometheus text exposition for a worker. It must not
+// block on remote dependencies; health checks already cover those separately.
+type MetricsWriter func(io.Writer)
+
+func HealthHandler(service string, checks ...HealthCheck) http.Handler {
+	return healthHandler(service, checks, nil)
+}
+
+func healthHandler(service string, checks []HealthCheck, metrics MetricsWriter) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health/live", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"status":"live","service":"` + service + `"}`))
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "live", "service": service})
 	})
-	mux.HandleFunc("GET /health/ready", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("GET /health/ready", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"status":"ready","service":"` + service + `"}`))
+		status, code := "ready", http.StatusOK
+		results := map[string]string{}
+		for _, check := range checks {
+			ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+			err := check.Check(ctx)
+			cancel()
+			if err != nil {
+				results[check.Name] = "unavailable"
+				status, code = "degraded", http.StatusServiceUnavailable
+			} else {
+				results[check.Name] = "ok"
+			}
+		}
+		w.WriteHeader(code)
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": status, "service": service, "checks": results})
 	})
-	return http.ListenAndServe(":"+env("PORT", "8080"), mux)
+	mux.HandleFunc("GET /metrics", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; version=0.0.4")
+		if metrics != nil {
+			metrics(w)
+		}
+	})
+	return mux
+}
+
+func RunHealth(service string, checks ...HealthCheck) error {
+	server := &http.Server{
+		Addr:              ":" + env("PORT", "8080"),
+		Handler:           HealthHandler(service, checks...),
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       5 * time.Second,
+		WriteTimeout:      5 * time.Second,
+		IdleTimeout:       30 * time.Second,
+	}
+	return server.ListenAndServe()
+}
+
+func RunHealthWithMetrics(service string, checks []HealthCheck, metrics MetricsWriter) error {
+	server := &http.Server{
+		Addr:              ":" + env("PORT", "8080"),
+		Handler:           healthHandler(service, checks, metrics),
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       5 * time.Second,
+		WriteTimeout:      5 * time.Second,
+		IdleTimeout:       30 * time.Second,
+	}
+	return server.ListenAndServe()
 }
 
 func env(key, fallback string) string {

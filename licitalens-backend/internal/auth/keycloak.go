@@ -18,8 +18,9 @@ import (
 )
 
 type Identity struct {
-	Subject string
-	Roles   []string
+	Subject  string
+	Roles    []string
+	IssuedAt time.Time
 }
 type Authenticator interface {
 	Authenticate(context.Context, string) (Identity, error)

@@ -11,6 +11,21 @@ permissions:
 jobs:
   backend:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_DB: licitalens_test
+          POSTGRES_USER: licitalens
+          POSTGRES_PASSWORD: integration-only
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U licitalens -d licitalens_test"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      TEST_DATABASE_URL: postgres://licitalens:integration-only@localhost:5432/licitalens_test?sslmode=disable
     defaults:
       run:
         working-directory: licitalens-backend
@@ -35,7 +50,10 @@ jobs:
         with:
           bun-version: "1.3.14"
       - run: bun install --frozen-lockfile
+      - run: bun run generate:sdk
+      - run: git diff --exit-code -- src/api/schema.d.ts
       - run: bun run typecheck
+      - run: bunx expo export --platform web
 
   helm:
     runs-on: ubuntu-latest
@@ -54,7 +72,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        service: [gateway, tenancy, ingestion, procurement, intelligence, notifications]
+        service: [gateway, tenancy, ingestion, procurement, intelligence, notifications, billing]
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
@@ -64,3 +82,74 @@ jobs:
           push: false
           build-args: SERVICE=${{ matrix.service }}
           tags: licitalens-${{ matrix.service }}:${{ github.sha }}
+
+  self-hosted:
+    runs-on: ubuntu-latest
+    needs: [backend, mobile]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Generate isolated installation secrets
+        working-directory: licitalens-backend/deploy/self-hosted
+        run: ./setup.sh
+      - name: Validate the published self-hosted composition
+        working-directory: licitalens-backend
+        run: docker compose --env-file deploy/self-hosted/.env -f deploy/self-hosted/compose.yaml config --quiet
+      - name: Build and initialize a clean self-hosted database
+        working-directory: licitalens-backend
+        run: |
+          docker compose --env-file deploy/self-hosted/.env -f deploy/self-hosted/compose.yaml --profile tools build gateway admin ingestion procurement notifications web
+          docker compose --env-file deploy/self-hosted/.env -f deploy/self-hosted/compose.yaml up -d postgres migrate
+          docker compose --env-file deploy/self-hosted/.env -f deploy/self-hosted/compose.yaml wait migrate
+      - name: Verify no demonstration seed was installed
+        working-directory: licitalens-backend
+        run: |
+          test "$(docker compose --env-file deploy/self-hosted/.env -f deploy/self-hosted/compose.yaml exec -T postgres psql -U licitalens -d licitalens -Atc 'select count(*) from procurement.opportunities')" = "0"
+      - name: Bootstrap the first owner without public registration
+        working-directory: licitalens-backend
+        run: |
+          BOOTSTRAP_PASSWORD=integration-only-password docker compose --env-file deploy/self-hosted/.env -f deploy/self-hosted/compose.yaml --profile tools run --rm admin --email owner@example.com --name "CI Owner" --organization "CI Organization" --accept-legal --terms-version ci --privacy-version ci
+          test "$(docker compose --env-file deploy/self-hosted/.env -f deploy/self-hosted/compose.yaml exec -T postgres psql -U licitalens -d licitalens -Atc "select count(*) from tenancy.accounts where email='owner@example.com' and terms_version='ci' and privacy_version='ci' and legal_accepted_at is not null and email_verified_at is not null")" = "1"
+      - name: Initialize and verify durable event topics
+        working-directory: licitalens-backend
+        run: |
+          docker compose --env-file deploy/self-hosted/.env -f deploy/self-hosted/compose.yaml up -d redpanda redpanda-init
+          docker compose --env-file deploy/self-hosted/.env -f deploy/self-hosted/compose.yaml wait redpanda-init
+          docker compose --env-file deploy/self-hosted/.env -f deploy/self-hosted/compose.yaml exec -T redpanda rpk topic describe procurement.discovered.v1
+          docker compose --env-file deploy/self-hosted/.env -f deploy/self-hosted/compose.yaml exec -T redpanda rpk topic describe procurement.dead-letter.v1
+      - name: Start and verify the complete application
+        working-directory: licitalens-backend
+        run: |
+          docker run -d --name licitalens-pncp-fixture --network licitalens-selfhosted_default -v "${GITHUB_WORKSPACE}/.github/fixtures/pncp:/www:ro" busybox:1.36 httpd -f -p 8080 -h /www
+          HTTP_PORT=18080 ALLOWED_ORIGINS=http://localhost:18080 APP_BASE_URL=http://localhost:18080 PNCP_BASE_URL=http://licitalens-pncp-fixture:8080/api/consulta/v1 PNCP_INITIAL_DAYS=1 PNCP_LOOKBACK_DAYS=1 PNCP_RECENT_PAGES=1 docker compose --env-file deploy/self-hosted/.env -f deploy/self-hosted/compose.yaml up -d gateway ingestion procurement notifications web
+          for attempt in {1..30}; do curl --max-time 2 -fsS http://localhost:18080/api/health/ready && break; sleep 1; done
+          curl --max-time 5 -fsS http://localhost:18080/api/health/ready
+          curl --max-time 5 -fsS http://localhost:18080/api/v1/config | grep '"deployment_mode":"self_hosted"'
+          for service in ingestion procurement notifications; do
+            for attempt in {1..30}; do
+              docker run --rm --network licitalens-selfhosted_default curlimages/curl:8.12.1 --max-time 2 -fsS "http://${service}:8080/health/ready" && break
+              sleep 1
+            done
+            docker run --rm --network licitalens-selfhosted_default curlimages/curl:8.12.1 --max-time 5 -fsS "http://${service}:8080/health/ready"
+          done
+          for attempt in {1..30}; do
+            count="$(docker compose --env-file deploy/self-hosted/.env -f deploy/self-hosted/compose.yaml exec -T postgres psql -U licitalens -d licitalens -Atc 'select count(*) from procurement.opportunities')"
+            test "$count" -gt "0" && break
+            sleep 1
+          done
+          test "$(docker compose --env-file deploy/self-hosted/.env -f deploy/self-hosted/compose.yaml exec -T postgres psql -U licitalens -d licitalens -Atc 'select count(*) from procurement.opportunities')" -gt "0"
+      - name: Verify PostgreSQL backup restoration in isolation
+        working-directory: licitalens-backend
+        run: |
+          docker compose --env-file deploy/self-hosted/.env -f deploy/self-hosted/compose.yaml exec -T postgres pg_dump -U licitalens -d licitalens > /tmp/licitalens-ci.sql
+          docker run -d --name licitalens-restore -e POSTGRES_DB=licitalens_restore -e POSTGRES_USER=licitalens -e POSTGRES_PASSWORD=restore-only pgvector/pgvector:pg17
+          for attempt in {1..30}; do docker exec licitalens-restore pg_isready -U licitalens -d licitalens_restore && break; sleep 1; done
+          docker exec licitalens-restore pg_isready -U licitalens -d licitalens_restore
+          docker exec -i licitalens-restore psql -v ON_ERROR_STOP=1 -U licitalens -d licitalens_restore < /tmp/licitalens-ci.sql
+          test "$(docker exec licitalens-restore psql -U licitalens -d licitalens_restore -Atc 'select count(*) from tenancy.accounts')" -gt "0"
+          test "$(docker exec licitalens-restore psql -U licitalens -d licitalens_restore -Atc 'select count(*) from procurement.opportunities')" -gt "0"
+      - name: Clean isolated composition
+        if: always()
+        working-directory: licitalens-backend
+        run: |
+          docker rm -f licitalens-pncp-fixture licitalens-restore 2>/dev/null || true
+          docker compose --env-file deploy/self-hosted/.env -f deploy/self-hosted/compose.yaml down -v --remove-orphans

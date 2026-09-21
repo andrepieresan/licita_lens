@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Aplica migrations comerciais 004–010 em Postgres já no ar (idempotente).
+# Aplica migrations comerciais 004–012 em Postgres já no ar (idempotente).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -58,3 +58,9 @@ if [[ -z "$TABLE" ]]; then
 else
   echo "   tenancy.notification_scan já existe."
 fi
+
+echo "→ Aplicando migration 011 (sessões e tokens de conta)…"
+"${COMPOSE[@]}" exec -T postgres psql -U licitalens -d licitalens -v ON_ERROR_STOP=1 < "${ROOT}/db/postgres/011_account_sessions.psql"
+
+echo "→ Aplicando migration 012 (aceite jurídico)…"
+"${COMPOSE[@]}" exec -T postgres psql -U licitalens -d licitalens -v ON_ERROR_STOP=1 < "${ROOT}/db/postgres/012_legal_acceptance.psql"

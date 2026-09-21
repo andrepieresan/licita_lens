@@ -8,7 +8,7 @@ bun run generate:sdk
 EXPO_PUBLIC_API_URL=http://localhost:8080 bun start
 ```
 
-Em aparelho físico, use o IP local da máquina no lugar de `localhost`. Fora do modo demo, o app usa OIDC/PKCE (Keycloak) ou `EXPO_PUBLIC_ACCESS_TOKEN` para desenvolvimento, provisiona a organização no primeiro acesso e expõe checkout, portal e histórico na aba Plano.
+Em aparelho físico, use o IP local da máquina no lugar de `localhost`. Fora do modo demo, o app usa o login próprio da API, com sessão em cookie na web e bearer token nos clientes nativos. Keycloak/OIDC continua disponível apenas como integração opcional; o app provisiona a organização no cadastro e expõe checkout, portal e histórico na aba Plano.
 
 ```bash
 EXPO_PUBLIC_KEYCLOAK_ISSUER=http://localhost:8180/realms/licitalens

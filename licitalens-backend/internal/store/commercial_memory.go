@@ -16,6 +16,7 @@ type commercialMemory struct {
 	subscriptions     map[string]billing.Subscription
 	history           []domain.SubscriptionHistoryEntry
 	customers         map[string]string
+	webhookEvents     map[string]bool
 	usage             map[string]map[string]map[string]int
 	notificationPrefs map[string]domain.NotificationPreferences
 }
@@ -27,6 +28,7 @@ func newCommercialMemory() *commercialMemory {
 		subscriptions:     map[string]billing.Subscription{},
 		history:           []domain.SubscriptionHistoryEntry{},
 		customers:         map[string]string{},
+		webhookEvents:     map[string]bool{},
 		usage:             map[string]map[string]map[string]int{},
 		notificationPrefs: map[string]domain.NotificationPreferences{},
 	}

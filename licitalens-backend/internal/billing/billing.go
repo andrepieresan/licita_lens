@@ -20,10 +20,11 @@ func Plan(name string) (Entitlements, bool) {
 }
 
 type Subscription struct {
-	ExternalID string    `json:"external_id,omitempty"`
-	Plan       string    `json:"plan"`
-	Status     string    `json:"status"`
-	UpdatedAt  time.Time `json:"updated_at"`
+	ExternalID       string     `json:"external_id,omitempty"`
+	Plan             string     `json:"plan"`
+	Status           string     `json:"status"`
+	CurrentPeriodEnd *time.Time `json:"current_period_end,omitempty"`
+	UpdatedAt        time.Time  `json:"updated_at"`
 }
 type Event struct {
 	ExternalID, Plan, Status string

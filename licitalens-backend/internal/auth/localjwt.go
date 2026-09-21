@@ -36,11 +36,11 @@ func (l *LocalJWT) Issue(subject, email string, ttl time.Duration) (string, erro
 	header, _ := json.Marshal(map[string]string{"alg": "HS256", "typ": "JWT"})
 	now := time.Now().UTC()
 	payload, _ := json.Marshal(map[string]any{
-		"sub": subject,
+		"sub":   subject,
 		"email": email,
-		"iss": l.issuer,
-		"iat": now.Unix(),
-		"exp": now.Add(ttl).Unix(),
+		"iss":   l.issuer,
+		"iat":   now.Unix(),
+		"exp":   now.Add(ttl).Unix(),
 	})
 	signingInput := base64.RawURLEncoding.EncodeToString(header) + "." + base64.RawURLEncoding.EncodeToString(payload)
 	mac := hmac.New(sha256.New, l.secret)
@@ -62,6 +62,7 @@ func (l *LocalJWT) Authenticate(_ context.Context, token string) (Identity, erro
 		Subject string `json:"sub"`
 		Issuer  string `json:"iss"`
 		Expires int64  `json:"exp"`
+		Issued  int64  `json:"iat"`
 		Email   string `json:"email"`
 	}
 	if json.Unmarshal(payloadJSON, &claims) != nil || claims.Subject == "" {
@@ -80,7 +81,7 @@ func (l *LocalJWT) Authenticate(_ context.Context, token string) (Identity, erro
 	if !hmac.Equal(signature, mac.Sum(nil)) {
 		return Identity{}, errors.New("invalid token signature")
 	}
-	return Identity{Subject: claims.Subject, Roles: []string{"owner"}}, nil
+	return Identity{Subject: claims.Subject, Roles: []string{"owner"}, IssuedAt: time.Unix(claims.Issued, 0).UTC()}, nil
 }
 
 type Chain struct {

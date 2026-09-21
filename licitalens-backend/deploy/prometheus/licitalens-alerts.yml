@@ -16,3 +16,59 @@ groups:
           severity: warning
         annotations:
           summary: /health/ready degradado (Postgres ou API)
+      - alert: LicitaLensIngestionStale
+        expr: time() - licitalens_ingestion_last_success_timestamp_seconds > 900
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: Ingestão PNCP sem sucesso recente
+      - alert: LicitaLensIngestionFailures
+        expr: increase(licitalens_ingestion_failures_total[15m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Falhas recentes na ingestão PNCP
+      - alert: LicitaLensProcurementLag
+        expr: licitalens_procurement_consumer_lag > 100
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Fila de oportunidades acumulada
+      - alert: LicitaLensProcurementDeadLetters
+        expr: increase(licitalens_procurement_dead_letters_total[15m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Evento inválido encaminhado para DLQ
+      - alert: LicitaLensNotificationsFailing
+        expr: increase(licitalens_notifications_failures_total[15m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Entregas de alerta estão falhando
+      - alert: LicitaLensNotificationsStale
+        expr: time() - licitalens_notifications_last_success_timestamp_seconds > 900
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Worker de notificações sem ciclo saudável recente
+      - alert: LicitaLensBackupMissingOrStale
+        expr: licitalens_backup_configured == 0 or time() - licitalens_backup_last_success_timestamp_seconds > 93600
+        for: 30m
+        labels:
+          severity: critical
+        annotations:
+          summary: Backup não configurado ou mais antigo que 26 horas
+      - alert: LicitaLensStripeReconciliationStale
+        expr: time() - licitalens_billing_reconcile_last_success_timestamp_seconds > 7200
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: Reconciliação Stripe sem sucesso recente

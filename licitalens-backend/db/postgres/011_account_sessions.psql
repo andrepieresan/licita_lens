@@ -1,0 +1,8 @@
+ALTER TABLE tenancy.accounts ADD COLUMN IF NOT EXISTS sessions_revoked_at timestamptz;
+ALTER TABLE tenancy.accounts ADD COLUMN IF NOT EXISTS email_verified_at timestamptz;
+CREATE TABLE IF NOT EXISTS tenancy.account_tokens (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(), account_id uuid NOT NULL REFERENCES tenancy.accounts(id) ON DELETE CASCADE,
+    purpose text NOT NULL CHECK (purpose IN ('verify_email','password_reset')), token_hash text NOT NULL UNIQUE,
+    expires_at timestamptz NOT NULL, consumed_at timestamptz, created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS account_tokens_lookup_idx ON tenancy.account_tokens(token_hash, purpose) WHERE consumed_at IS NULL;

@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 
 	"licitalens.dev/backend/internal/domain"
@@ -21,14 +22,21 @@ type Archive interface {
 type Publisher interface {
 	Publish(ctx context.Context, topic, key string, body []byte) error
 }
+type CheckpointStore interface {
+	IngestionCheckpoint(context.Context, string, string) (string, error)
+	SaveIngestionCheckpoint(context.Context, string, string, string) error
+}
 
 type Runner struct {
-	Client    *pncp.Client
-	Archive   Archive
-	Publisher Publisher
-	Logger    *slog.Logger
-	PageSize  int
-	MaxPages  int
+	Client      *pncp.Client
+	Archive     Archive
+	Publisher   Publisher
+	Logger      *slog.Logger
+	PageSize    int
+	MaxPages    int
+	MaxAttempts int
+	RetryDelay  time.Duration
+	Checkpoints CheckpointStore
 }
 
 type Result struct{ Pages, Records int }
@@ -36,7 +44,7 @@ type Result struct{ Pages, Records int }
 func (r Runner) SyncDay(ctx context.Context, day time.Time, modality int) (Result, error) {
 	pageNumber, result := 1, Result{}
 	for {
-		page, err := r.Client.Publications(ctx, day, day, modality, pageNumber, r.PageSize)
+		page, err := r.publications(ctx, day, modality, pageNumber)
 		if err != nil {
 			return result, err
 		}
@@ -60,7 +68,7 @@ func (r Runner) SyncRecent(ctx context.Context, day time.Time, modality, lookbac
 	if lookbackPages < 1 {
 		lookbackPages = 1
 	}
-	probe, err := r.Client.Publications(ctx, day, day, modality, 1, r.PageSize)
+	probe, err := r.publications(ctx, day, modality, 1)
 	if err != nil {
 		return Result{}, err
 	}
@@ -68,11 +76,19 @@ func (r Runner) SyncRecent(ctx context.Context, day time.Time, modality, lookbac
 	if start < 1 {
 		start = 1
 	}
+	partition := fmt.Sprintf("%s:%d", day.Format("2006-01-02"), modality)
+	if r.Checkpoints != nil {
+		if cursor, err := r.Checkpoints.IngestionCheckpoint(ctx, "pncp", partition); err != nil {
+			return Result{}, err
+		} else if page, parseErr := strconv.Atoi(cursor); parseErr == nil && page >= start && page < probe.TotalPages {
+			start = page + 1
+		}
+	}
 	result := Result{}
 	for pageNumber := start; pageNumber <= probe.TotalPages; pageNumber++ {
 		page := probe
 		if pageNumber != 1 {
-			page, err = r.Client.Publications(ctx, day, day, modality, pageNumber, r.PageSize)
+			page, err = r.publications(ctx, day, modality, pageNumber)
 			if err != nil {
 				return result, err
 			}
@@ -82,9 +98,51 @@ func (r Runner) SyncRecent(ctx context.Context, day time.Time, modality, lookbac
 		}
 		result.Pages++
 		result.Records += len(page.Opportunities)
+		if r.Checkpoints != nil {
+			if err := r.Checkpoints.SaveIngestionCheckpoint(ctx, "pncp", partition, strconv.Itoa(pageNumber)); err != nil {
+				return result, err
+			}
+		}
 	}
 	r.Logger.Info("incremental checkpoint", "source", "pncp", "day", day.Format("2006-01-02"), "modality", modality, "pages", result.Pages, "records", result.Records)
 	return result, nil
+}
+
+func (r Runner) publications(ctx context.Context, day time.Time, modality, pageNumber int) (pncp.Page, error) {
+	attempts := r.MaxAttempts
+	if attempts < 1 {
+		attempts = 3
+	}
+	delay := r.RetryDelay
+	if delay <= 0 {
+		delay = 500 * time.Millisecond
+	}
+	var lastErr error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		page, err := r.Client.Publications(ctx, day, day, modality, pageNumber, r.PageSize)
+		if err == nil {
+			return page, nil
+		}
+		lastErr = err
+		if attempt == attempts || ctx.Err() != nil {
+			break
+		}
+		r.Logger.Warn("PNCP request failed; retrying", "page", pageNumber, "modality", modality, "attempt", attempt, "max_attempts", attempts, "error", err)
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return pncp.Page{}, ctx.Err()
+		case <-timer.C:
+		}
+		if delay < 30*time.Second {
+			delay *= 2
+			if delay > 30*time.Second {
+				delay = 30 * time.Second
+			}
+		}
+	}
+	return pncp.Page{}, fmt.Errorf("PNCP page %d failed after %d attempt(s): %w", pageNumber, attempts, lastErr)
 }
 
 func (r Runner) processPage(ctx context.Context, day time.Time, modality, pageNumber int, page pncp.Page) error {

@@ -14,7 +14,7 @@ import (
 func TestWorkerSendsMatchedOpportunityEmail(t *testing.T) {
 	mem := store.NewMemory()
 	store.SeedDemo(mem)
-	_, org, _, err := mem.RegisterSaaSAccount(context.Background(), "alerts@test.com", "hash", "Alerts User", "Alerts Org", "pro")
+	_, org, _, err := mem.RegisterSaaSAccount(context.Background(), "alerts@test.com", "hash", "Alerts User", "Alerts Org", "pro", domain.LegalAcceptance{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,7 +44,7 @@ func TestWorkerSendsMatchedOpportunityEmail(t *testing.T) {
 func TestWorkerSkipsStaleAfterCursor(t *testing.T) {
 	mem := store.NewMemory()
 	store.SeedDemo(mem)
-	_, org, _, err := mem.RegisterSaaSAccount(context.Background(), "alerts2@test.com", "hash", "Alerts User", "Alerts Org", "pro")
+	_, org, _, err := mem.RegisterSaaSAccount(context.Background(), "alerts2@test.com", "hash", "Alerts User", "Alerts Org", "pro", domain.LegalAcceptance{})
 	if err != nil {
 		t.Fatal(err)
 	}

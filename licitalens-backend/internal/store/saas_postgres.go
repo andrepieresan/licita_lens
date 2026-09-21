@@ -12,7 +12,7 @@ import (
 	"licitalens.dev/backend/internal/domain"
 )
 
-func (p *Postgres) RegisterSaaSAccount(ctx context.Context, email, passwordHash, fullName, organizationName, plan string) (domain.Account, domain.Organization, billing.Subscription, error) {
+func (p *Postgres) RegisterSaaSAccount(ctx context.Context, email, passwordHash, fullName, organizationName, plan string, legal domain.LegalAcceptance) (domain.Account, domain.Organization, billing.Subscription, error) {
 	email = strings.ToLower(strings.TrimSpace(email))
 	if email == "" || passwordHash == "" || strings.TrimSpace(fullName) == "" || strings.TrimSpace(organizationName) == "" {
 		return domain.Account{}, domain.Organization{}, billing.Subscription{}, errors.New("invalid registration")
@@ -27,7 +27,12 @@ func (p *Postgres) RegisterSaaSAccount(ctx context.Context, email, passwordHash,
 	}
 	defer tx.Rollback(ctx)
 	var account domain.Account
-	err = tx.QueryRow(ctx, `INSERT INTO tenancy.accounts(email,password_hash,full_name,subject_id) VALUES ($1,$2,$3,$4) RETURNING id::text,email,full_name,subject_id,created_at`, email, passwordHash, fullName, subjectID).Scan(&account.ID, &account.Email, &account.FullName, &account.SubjectID, &account.CreatedAt)
+	var acceptedAt *time.Time
+	if !legal.AcceptedAt.IsZero() {
+		value := legal.AcceptedAt.UTC()
+		acceptedAt = &value
+	}
+	err = tx.QueryRow(ctx, `INSERT INTO tenancy.accounts(email,password_hash,full_name,subject_id,terms_version,privacy_version,legal_accepted_at) VALUES ($1,$2,$3,$4,NULLIF($5,''),NULLIF($6,''),$7) RETURNING id::text,email,full_name,subject_id,COALESCE(terms_version,''),COALESCE(privacy_version,''),legal_accepted_at,created_at`, email, passwordHash, fullName, subjectID, legal.TermsVersion, legal.PrivacyVersion, acceptedAt).Scan(&account.ID, &account.Email, &account.FullName, &account.SubjectID, &account.TermsVersion, &account.PrivacyVersion, &account.LegalAcceptedAt, &account.CreatedAt)
 	if err != nil {
 		return domain.Account{}, domain.Organization{}, billing.Subscription{}, err
 	}
@@ -41,7 +46,7 @@ func (p *Postgres) RegisterSaaSAccount(ctx context.Context, email, passwordHash,
 		return domain.Account{}, domain.Organization{}, billing.Subscription{}, err
 	}
 	var subscription billing.Subscription
-	err = tx.QueryRow(ctx, `INSERT INTO tenancy.subscriptions(organization_id, plan, status) VALUES ($1::uuid,$2,'trialing') RETURNING COALESCE(stripe_subscription_id,''), plan, status, updated_at`, org.ID, plan).Scan(&subscription.ExternalID, &subscription.Plan, &subscription.Status, &subscription.UpdatedAt)
+	err = tx.QueryRow(ctx, `INSERT INTO tenancy.subscriptions(organization_id, plan, status, current_period_end) VALUES ($1::uuid,$2,'trialing',now() + interval '14 days') RETURNING COALESCE(stripe_subscription_id,''), plan, status, current_period_end, updated_at`, org.ID, plan).Scan(&subscription.ExternalID, &subscription.Plan, &subscription.Status, &subscription.CurrentPeriodEnd, &subscription.UpdatedAt)
 	if err != nil {
 		return domain.Account{}, domain.Organization{}, billing.Subscription{}, err
 	}
@@ -52,11 +57,113 @@ func (p *Postgres) AccountByEmail(ctx context.Context, email string) (domain.Acc
 	email = strings.ToLower(strings.TrimSpace(email))
 	var account domain.Account
 	var passwordHash string
-	err := p.pool.QueryRow(ctx, `SELECT id::text,email,full_name,subject_id,created_at,password_hash FROM tenancy.accounts WHERE lower(email)=$1`, email).Scan(&account.ID, &account.Email, &account.FullName, &account.SubjectID, &account.CreatedAt, &passwordHash)
+	err := p.pool.QueryRow(ctx, `SELECT id::text,email,full_name,subject_id,COALESCE(terms_version,''),COALESCE(privacy_version,''),legal_accepted_at,created_at,password_hash FROM tenancy.accounts WHERE lower(email)=$1`, email).Scan(&account.ID, &account.Email, &account.FullName, &account.SubjectID, &account.TermsVersion, &account.PrivacyVersion, &account.LegalAcceptedAt, &account.CreatedAt, &passwordHash)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return account, "", ErrNotFound
 	}
 	return account, passwordHash, err
+}
+
+func (p *Postgres) AccountBySubject(ctx context.Context, subjectID string) (domain.Account, error) {
+	var account domain.Account
+	err := p.pool.QueryRow(ctx, `SELECT id::text,email,full_name,subject_id,COALESCE(terms_version,''),COALESCE(privacy_version,''),legal_accepted_at,created_at FROM tenancy.accounts WHERE subject_id=$1`, subjectID).Scan(&account.ID, &account.Email, &account.FullName, &account.SubjectID, &account.TermsVersion, &account.PrivacyVersion, &account.LegalAcceptedAt, &account.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return account, ErrNotFound
+	}
+	return account, err
+}
+
+func (p *Postgres) CreateAccountToken(ctx context.Context, email, purpose, tokenHash string, expiresAt time.Time) error {
+	_, err := p.pool.Exec(ctx, `WITH account AS (SELECT id FROM tenancy.accounts WHERE lower(email)=lower($1)),
+invalidated AS (UPDATE tenancy.account_tokens SET consumed_at=now() WHERE account_id IN (SELECT id FROM account) AND purpose=$2 AND consumed_at IS NULL)
+INSERT INTO tenancy.account_tokens(account_id,purpose,token_hash,expires_at) SELECT id,$2,$3,$4 FROM account`, email, purpose, tokenHash, expiresAt.UTC())
+	return err
+}
+
+func (p *Postgres) ConsumeAccountToken(ctx context.Context, purpose, tokenHash string) (domain.Account, error) {
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return domain.Account{}, err
+	}
+	defer tx.Rollback(ctx)
+	var account domain.Account
+	err = tx.QueryRow(ctx, `UPDATE tenancy.account_tokens t SET consumed_at=now() FROM tenancy.accounts a
+WHERE t.account_id=a.id AND t.purpose=$1 AND t.token_hash=$2 AND t.consumed_at IS NULL AND t.expires_at>now()
+RETURNING a.id::text,a.email,a.full_name,a.subject_id,a.created_at`, purpose, tokenHash).Scan(&account.ID, &account.Email, &account.FullName, &account.SubjectID, &account.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return account, ErrNotFound
+	}
+	if err != nil {
+		return account, err
+	}
+	return account, tx.Commit(ctx)
+}
+
+func (p *Postgres) MarkEmailVerified(ctx context.Context, subjectID string) error {
+	_, err := p.pool.Exec(ctx, `UPDATE tenancy.accounts SET email_verified_at=now() WHERE subject_id=$1`, subjectID)
+	return err
+}
+func (p *Postgres) EmailVerified(ctx context.Context, subjectID string) (bool, error) {
+	var verified bool
+	err := p.pool.QueryRow(ctx, `SELECT email_verified_at IS NOT NULL FROM tenancy.accounts WHERE subject_id=$1`, subjectID).Scan(&verified)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, ErrNotFound
+	}
+	return verified, err
+}
+func (p *Postgres) UpdatePassword(ctx context.Context, subjectID, passwordHash string) error {
+	_, err := p.pool.Exec(ctx, `UPDATE tenancy.accounts SET password_hash=$2, sessions_revoked_at=now() WHERE subject_id=$1`, subjectID, passwordHash)
+	return err
+}
+func (p *Postgres) DeleteAccount(ctx context.Context, subjectID string) error {
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if _, err = tx.Exec(ctx, `DELETE FROM notifications.deliveries WHERE organization_id IN (SELECT organization_id FROM tenancy.memberships WHERE subject_id=$1 AND role='owner')`, subjectID); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(ctx, `DELETE FROM notifications.channels WHERE organization_id IN (SELECT organization_id FROM tenancy.memberships WHERE subject_id=$1 AND role='owner')`, subjectID); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(ctx, `DELETE FROM intelligence.matches WHERE organization_id IN (SELECT organization_id FROM tenancy.memberships WHERE subject_id=$1 AND role='owner')`, subjectID); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(ctx, `DELETE FROM intelligence.usage_ledger WHERE organization_id IN (SELECT organization_id FROM tenancy.memberships WHERE subject_id=$1 AND role='owner')`, subjectID); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(ctx, `DELETE FROM tenancy.organizations WHERE id IN (SELECT organization_id FROM tenancy.memberships WHERE subject_id=$1 AND role='owner')`, subjectID); err != nil {
+		return err
+	}
+	tag, err := tx.Exec(ctx, `DELETE FROM tenancy.accounts WHERE subject_id=$1`, subjectID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return tx.Commit(ctx)
+}
+
+func (p *Postgres) SessionActive(ctx context.Context, subjectID string, issuedAt time.Time) (bool, error) {
+	var active bool
+	err := p.pool.QueryRow(ctx, `SELECT sessions_revoked_at IS NULL OR sessions_revoked_at < $2 FROM tenancy.accounts WHERE subject_id=$1`, subjectID, issuedAt).Scan(&active)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	return active, err
+}
+
+func (p *Postgres) RevokeSessions(ctx context.Context, subjectID string, at time.Time) error {
+	command, err := p.pool.Exec(ctx, `UPDATE tenancy.accounts SET sessions_revoked_at=$2 WHERE subject_id=$1`, subjectID, at.UTC())
+	if err != nil {
+		return err
+	}
+	if command.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 func (p *Postgres) Deals(ctx context.Context, organizationID string) ([]domain.Deal, error) {
