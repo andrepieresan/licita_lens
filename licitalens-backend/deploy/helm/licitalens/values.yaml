@@ -3,17 +3,45 @@ image:
   tag: latest
   pullPolicy: IfNotPresent
 services:
-  gateway: { replicas: 2, port: 8080, command: gateway }
-  ingestion: { replicas: 1, port: 8080, command: ingestion }
-  tenancy: { replicas: 2, port: 8080, command: tenancy }
-  procurement: { replicas: 2, port: 8080, command: procurement }
-  intelligence: { replicas: 1, port: 8080, command: intelligence }
-  notifications: { replicas: 1, port: 8080, command: notifications }
-  billing: { replicas: 1, port: 8080, command: billing }
+  gateway: { enabled: true, replicas: 2, port: 8080, command: gateway }
+  ingestion: { enabled: true, replicas: 1, port: 8080, command: ingestion }
+  tenancy: { enabled: true, replicas: 2, port: 8080, command: tenancy }
+  procurement: { enabled: true, replicas: 2, port: 8080, command: procurement }
+  intelligence: { enabled: true, replicas: 1, port: 8080, command: intelligence }
+  notifications: { enabled: true, replicas: 1, port: 8080, command: notifications }
+  billing: { enabled: true, replicas: 1, port: 8080, command: billing }
 config:
   demoMode: "false"
   aiProvider: openai
 secretName: licitalens-secrets
+serviceEnv: {}
+local:
+  enabled: false
+  postgres:
+    image: pgvector/pgvector:pg17
+    storage: 2Gi
+  redpanda:
+    image: redpandadata/redpanda:v25.2.9
+    storage: 2Gi
+  minio:
+    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
+    storage: 2Gi
+  migrationImage: postgres:17-alpine
+  topicInitImage: redpandadata/redpanda:v25.2.9
+  secrets:
+    postgresPassword: local-only
+    minioRootUser: licitalens
+    minioRootPassword: local-only-password
+    authJwtSecret: licitalens-local-kubernetes-secret-change-me-32
+    adminApiKey: licitalens-local-admin-key-change-me
+  bootstrap:
+    enabled: false
+    email: owner@example.com
+    name: Local Owner
+    organization: Local Organization
+    password: local-validation-password
+    termsVersion: local
+    privacyVersion: local
 ingress:
   enabled: false
   className: nginx
@@ -25,3 +53,5 @@ ingress:
 resources:
   requests: { cpu: 50m, memory: 64Mi }
   limits: { cpu: 500m, memory: 256Mi }
+autoscaling:
+  enabled: true

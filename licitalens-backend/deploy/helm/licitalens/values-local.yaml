@@ -1,0 +1,65 @@
+image:
+  repository: licitalens
+  tag: local
+  pullPolicy: Never
+
+services:
+  gateway: { enabled: true, replicas: 1, port: 8080, command: gateway }
+  ingestion: { enabled: true, replicas: 1, port: 8080, command: ingestion }
+  tenancy: { enabled: false, replicas: 0, port: 8080, command: tenancy }
+  procurement: { enabled: true, replicas: 1, port: 8080, command: procurement }
+  intelligence: { enabled: false, replicas: 0, port: 8080, command: intelligence }
+  notifications: { enabled: true, replicas: 1, port: 8080, command: notifications }
+  billing: { enabled: false, replicas: 0, port: 8080, command: billing }
+
+config:
+  demoMode: "false"
+  aiProvider: ""
+secretName: licitalens-secrets
+serviceEnv:
+  gateway:
+    DEPLOYMENT_MODE: self_hosted
+    PUBLIC_SIGNUP: "false"
+    ALLOWED_ORIGINS: http://localhost:8081
+    APP_BASE_URL: http://localhost:8081
+  ingestion:
+    PNCP_INITIAL_DAYS: "1"
+    PNCP_LOOKBACK_DAYS: "1"
+    PNCP_RECENT_PAGES: "3"
+    PNCP_MODALITIES: "6"
+    PNCP_MAX_ATTEMPTS: "3"
+    PNCP_REQUEST_TIMEOUT: 30s
+    SYNC_INTERVAL: 5m
+  notifications:
+    NOTIFICATIONS_WORKER: "true"
+    DEPLOYMENT_MODE: self_hosted
+    ALLOWED_ORIGINS: http://localhost:8081
+
+local:
+  enabled: true
+  migrationImage: pgvector/pgvector:pg17
+  bootstrap:
+    enabled: true
+    email: owner@example.com
+    name: Local Owner
+    organization: Local Organization
+    password: local-validation-password
+    termsVersion: local
+    privacyVersion: local
+
+  secrets:
+    postgresPassword: local-only
+    minioRootUser: licitalens
+    minioRootPassword: local-only-password
+    authJwtSecret: k8sLocalJwt9f4c7b2e1a6d8f3c0b5e7a9d2f4c6b8e
+    adminApiKey: k8sLocalAdmin7f3a9c1e5b8d2g4h6j9k
+
+ingress:
+  enabled: false
+
+autoscaling:
+  enabled: false
+
+resources:
+  requests: { cpu: 25m, memory: 64Mi }
+  limits: { cpu: 500m, memory: 512Mi }

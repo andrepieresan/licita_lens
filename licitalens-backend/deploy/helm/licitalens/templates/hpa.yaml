@@ -1,4 +1,6 @@
+{{- if .Values.autoscaling.enabled }}
 {{- range $name, $service := .Values.services }}
+{{- if or (not (hasKey $service "enabled")) $service.enabled }}
 ---
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
@@ -14,4 +16,5 @@ spec:
         name: cpu
         target: { type: Utilization, averageUtilization: 70 }
 {{- end }}
-
+{{- end }}
+{{- end }}

@@ -1,4 +1,5 @@
 {{- range $name, $service := .Values.services }}
+{{- if or (not (hasKey $service "enabled")) $service.enabled }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -12,7 +13,7 @@ spec:
     metadata:
       labels: { app.kubernetes.io/name: {{ $name }}, app.kubernetes.io/instance: {{ $.Release.Name }}, app.kubernetes.io/part-of: licitalens }
     spec:
-      securityContext: { runAsNonRoot: true }
+      securityContext: { runAsNonRoot: true, runAsUser: 65532, runAsGroup: 65532 }
       containers:
         - name: {{ $name }}
           image: "{{ $.Values.image.repository }}-{{ $service.command }}:{{ $.Values.image.tag }}"
@@ -22,6 +23,9 @@ spec:
             - { name: PORT, value: {{ $service.port | quote }} }
             - { name: DEMO_MODE, value: {{ $.Values.config.demoMode | quote }} }
             - { name: AI_PROVIDER, value: {{ $.Values.config.aiProvider | quote }} }
+            {{- range $key, $value := (index $.Values.serviceEnv $name | default dict) }}
+            - { name: {{ $key | quote }}, value: {{ $value | quote }} }
+            {{- end }}
           envFrom:
             - secretRef: { name: {{ $.Values.secretName }} }
           readinessProbe: { httpGet: { path: /health/ready, port: http }, initialDelaySeconds: 3, periodSeconds: 5 }
@@ -37,4 +41,4 @@ spec:
   selector: { app.kubernetes.io/name: {{ $name }}, app.kubernetes.io/instance: {{ $.Release.Name }} }
   ports: [{ name: http, port: 80, targetPort: http }]
 {{- end }}
-
+{{- end }}

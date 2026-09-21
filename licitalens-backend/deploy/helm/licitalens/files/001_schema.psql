@@ -1,0 +1,125 @@
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+CREATE EXTENSION IF NOT EXISTS vector;
+
+CREATE SCHEMA IF NOT EXISTS tenancy;
+CREATE SCHEMA IF NOT EXISTS procurement;
+CREATE SCHEMA IF NOT EXISTS intelligence;
+CREATE SCHEMA IF NOT EXISTS notifications;
+CREATE SCHEMA IF NOT EXISTS crm;
+
+CREATE TABLE IF NOT EXISTS tenancy.organizations (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(), name text NOT NULL,
+    status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','active','past_due','canceled')),
+    stripe_customer_id text UNIQUE, notification_preferences jsonb NOT NULL DEFAULT '{"push":true,"email":true,"whatsapp":false,"deadline_reminder":true}'::jsonb,
+    created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS tenancy.memberships (
+    organization_id uuid NOT NULL REFERENCES tenancy.organizations(id) ON DELETE CASCADE,
+    subject_id text NOT NULL, role text NOT NULL CHECK (role IN ('owner','admin','analyst','viewer')),
+    created_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY (organization_id, subject_id)
+);
+CREATE TABLE IF NOT EXISTS tenancy.subscriptions (
+    organization_id uuid PRIMARY KEY REFERENCES tenancy.organizations(id) ON DELETE CASCADE,
+    stripe_subscription_id text UNIQUE, plan text NOT NULL CHECK (plan IN ('essential','pro')),
+    status text NOT NULL, current_period_end timestamptz, updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS tenancy.commercial_profiles (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(), organization_id uuid NOT NULL REFERENCES tenancy.organizations(id) ON DELETE CASCADE,
+    name text NOT NULL, description text NOT NULL, keywords text[] NOT NULL DEFAULT '{}', categories text[] NOT NULL DEFAULT '{}',
+    states text[] NOT NULL DEFAULT '{}', municipalities text[] NOT NULL DEFAULT '{}', modalities integer[] NOT NULL DEFAULT '{}',
+    required_terms text[] NOT NULL DEFAULT '{}', excluded_terms text[] NOT NULL DEFAULT '{}', minimum_value_cents bigint NOT NULL DEFAULT 0,
+    maximum_value_cents bigint NOT NULL DEFAULT 0, created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS commercial_profiles_organization_idx ON tenancy.commercial_profiles(organization_id);
+CREATE TABLE IF NOT EXISTS tenancy.webhook_events (
+    provider text NOT NULL, external_id text NOT NULL, received_at timestamptz NOT NULL DEFAULT now(), processed_at timestamptz,
+    payload_hash text NOT NULL, PRIMARY KEY (provider, external_id)
+);
+CREATE TABLE IF NOT EXISTS tenancy.usage_counters (
+    organization_id uuid NOT NULL REFERENCES tenancy.organizations(id) ON DELETE CASCADE, period_start date NOT NULL,
+    kind text NOT NULL, used integer NOT NULL DEFAULT 0 CHECK (used >= 0), PRIMARY KEY (organization_id, period_start, kind)
+);
+CREATE TABLE IF NOT EXISTS tenancy.subscription_history (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(), organization_id uuid NOT NULL REFERENCES tenancy.organizations(id) ON DELETE CASCADE,
+    stripe_subscription_id text, plan text NOT NULL CHECK (plan IN ('essential','pro')), status text NOT NULL,
+    stripe_event_id text, recorded_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS subscription_history_org_idx ON tenancy.subscription_history (organization_id, recorded_at DESC);
+CREATE TABLE IF NOT EXISTS tenancy.accounts (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(), email text NOT NULL UNIQUE, password_hash text NOT NULL,
+    full_name text NOT NULL, subject_id text NOT NULL UNIQUE, sessions_revoked_at timestamptz,
+    terms_version text, privacy_version text, legal_accepted_at timestamptz, created_at timestamptz NOT NULL DEFAULT now()
+);
+ALTER TABLE tenancy.accounts ADD COLUMN IF NOT EXISTS sessions_revoked_at timestamptz;
+ALTER TABLE tenancy.accounts ADD COLUMN IF NOT EXISTS email_verified_at timestamptz;
+ALTER TABLE tenancy.accounts ADD COLUMN IF NOT EXISTS terms_version text;
+ALTER TABLE tenancy.accounts ADD COLUMN IF NOT EXISTS privacy_version text;
+ALTER TABLE tenancy.accounts ADD COLUMN IF NOT EXISTS legal_accepted_at timestamptz;
+CREATE TABLE IF NOT EXISTS tenancy.account_tokens (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(), account_id uuid NOT NULL REFERENCES tenancy.accounts(id) ON DELETE CASCADE,
+    purpose text NOT NULL CHECK (purpose IN ('verify_email','password_reset')), token_hash text NOT NULL UNIQUE,
+    expires_at timestamptz NOT NULL, consumed_at timestamptz, created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS account_tokens_lookup_idx ON tenancy.account_tokens(token_hash, purpose) WHERE consumed_at IS NULL;
+CREATE INDEX IF NOT EXISTS accounts_email_idx ON tenancy.accounts (lower(email));
+CREATE TABLE IF NOT EXISTS tenancy.notification_scan (
+    organization_id uuid PRIMARY KEY REFERENCES tenancy.organizations(id) ON DELETE CASCADE,
+    last_opportunity_at timestamptz NOT NULL DEFAULT '1970-01-01T00:00:00Z'
+);
+
+CREATE TABLE IF NOT EXISTS procurement.opportunities (
+    id text PRIMARY KEY, source text NOT NULL, source_id text NOT NULL, content_hash text NOT NULL, object text NOT NULL,
+    organization_name text NOT NULL, state char(2), municipality text, modality_code integer, estimated_value_cents bigint NOT NULL DEFAULT 0,
+    published_at timestamptz, proposal_deadline timestamptz, source_updated_at timestamptz, source_url text,
+    ingested_at timestamptz NOT NULL DEFAULT now(), UNIQUE (source, source_id)
+);
+CREATE INDEX IF NOT EXISTS opportunities_published_idx ON procurement.opportunities(published_at DESC);
+CREATE INDEX IF NOT EXISTS opportunities_state_deadline_idx ON procurement.opportunities(state, proposal_deadline);
+CREATE INDEX IF NOT EXISTS opportunities_object_search_idx ON procurement.opportunities USING gin(to_tsvector('portuguese', object));
+CREATE TABLE IF NOT EXISTS procurement.ingestion_checkpoints (
+    source text NOT NULL, partition_key text NOT NULL, cursor text, updated_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (source, partition_key)
+);
+
+CREATE TABLE IF NOT EXISTS intelligence.opportunity_embeddings (
+    opportunity_id text PRIMARY KEY, provider text NOT NULL, model text NOT NULL, embedding vector,
+    content_hash text NOT NULL, created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS intelligence.matches (
+    organization_id uuid NOT NULL, profile_id uuid NOT NULL, opportunity_id text NOT NULL,
+    score smallint NOT NULL CHECK (score BETWEEN 0 AND 100), breakdown jsonb NOT NULL, evidence jsonb NOT NULL,
+    explanation text, prompt_version text, calculated_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY (profile_id, opportunity_id)
+);
+CREATE INDEX IF NOT EXISTS matches_feed_idx ON intelligence.matches(organization_id, score DESC, calculated_at DESC);
+CREATE TABLE IF NOT EXISTS intelligence.usage_ledger (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(), organization_id uuid NOT NULL, capability text NOT NULL,
+    units integer NOT NULL CHECK (units > 0), provider text, input_tokens integer NOT NULL DEFAULT 0,
+    output_tokens integer NOT NULL DEFAULT 0, occurred_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS notifications.channels (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(), organization_id uuid NOT NULL, type text NOT NULL CHECK (type IN ('expo_push','email','whatsapp')),
+    destination text NOT NULL, enabled boolean NOT NULL DEFAULT true, consented_at timestamptz, opted_out_at timestamptz,
+    created_at timestamptz NOT NULL DEFAULT now(), UNIQUE (organization_id, type, destination)
+);
+CREATE TABLE IF NOT EXISTS notifications.deliveries (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(), organization_id uuid NOT NULL, channel_id uuid NOT NULL REFERENCES notifications.channels(id),
+    opportunity_id text NOT NULL, status text NOT NULL CHECK (status IN ('pending','sent','failed','suppressed')),
+    attempts integer NOT NULL DEFAULT 0, provider_message_id text, last_error text, created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now(), UNIQUE (channel_id, opportunity_id)
+);
+
+CREATE TABLE IF NOT EXISTS crm.deals (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(), organization_id uuid NOT NULL REFERENCES tenancy.organizations(id) ON DELETE CASCADE,
+    opportunity_id text, title text NOT NULL, buyer_name text NOT NULL DEFAULT '',
+    stage text NOT NULL CHECK (stage IN ('prospecting','analysis','proposal','negotiation','won','lost')),
+    estimated_value_cents bigint NOT NULL DEFAULT 0, next_follow_up_at timestamptz, closed_at timestamptz,
+    created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS deals_organization_stage_idx ON crm.deals (organization_id, stage);
+CREATE UNIQUE INDEX IF NOT EXISTS deals_organization_opportunity_uidx ON crm.deals (organization_id, opportunity_id) WHERE opportunity_id IS NOT NULL AND opportunity_id <> '';
+CREATE TABLE IF NOT EXISTS crm.deal_followups (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(), deal_id uuid NOT NULL REFERENCES crm.deals(id) ON DELETE CASCADE,
+    note text NOT NULL, scheduled_at timestamptz, created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS deal_followups_deal_idx ON crm.deal_followups (deal_id, created_at DESC);
