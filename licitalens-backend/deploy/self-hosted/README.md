@@ -108,7 +108,7 @@ Read the release notes and back up all persistent volumes. This source distribut
 docker compose up -d --build
 ```
 
-The release workflow also publishes versioned multi-architecture images to GHCR after all validation gates pass. The default Compose intentionally remains build-from-source until the final public repository owner defines stable image names. The `migrate` service is idempotent. An application rollback does not automatically undo database changes; restore the compatible backup if a database rollback is needed.
+The self-hosted Compose builds images from source; prebuilt GHCR images are not currently part of the distribution. The `migrate` service is idempotent. An application rollback does not automatically undo database changes; restore the compatible backup if a database rollback is needed.
 
 ## Monitoring
 

@@ -123,6 +123,6 @@ Para uma operação cloud ainda são necessários credenciais e validação real
 
 O gateway expõe métricas Prometheus em `/metrics`; a distribuição self-hosted documenta também as métricas privadas de ingestão, alertas e idade do backup em [`deploy/self-hosted/README.md`](deploy/self-hosted/README.md).
 
-As regras e a configuração-base de scrape ficam em [`deploy/prometheus`](deploy/prometheus). O workflow [`release.yml`](../.github/workflows/release.yml) gera imagens `amd64` e `arm64` no GHCR e uma GitHub Release apenas quando uma tag `v*` for enviada para o repositório público.
+As regras e a configuração-base de scrape ficam em [`deploy/prometheus`](deploy/prometheus). A distribuição pública atual é pelo código-fonte; ainda não há imagens pré-compiladas ou release versionada disponível.
 
 Não adicione credenciais, tokens ou arquivos `.env` ao repositório.

@@ -31,3 +31,7 @@ coverage.out
 # Local certificates
 **/deploy/nginx/certs/
 
+# Local documentation and Codex artifacts
+/.codex-artifacts/
+/LicitaLens_Manual_CTO.docx
+/licitalens-expo-go-local.png

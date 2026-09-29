@@ -76,9 +76,7 @@ See the [backend guide](licitalens-backend/README.md), [mobile guide](licitalens
 
 ## Releases and upgrades
 
-Release notes and compatibility rules live in [CHANGELOG.md](CHANGELOG.md). Before every update, back up PostgreSQL, Redpanda and MinIO together, apply the published migrations, and restore a copy into isolated volumes before treating the backup as recoverable. Images are intentionally not published from this checkout until the public repository and registry owner are defined.
-
-When a public repository is ready, tagging a validated version as `v*` triggers the checked-in release workflow: it publishes multi-architecture backend and web images to GHCR and generates the GitHub Release.
+Release notes and compatibility rules live in [CHANGELOG.md](CHANGELOG.md). Before every update, back up PostgreSQL, Redpanda and MinIO together, apply the published migrations, and restore a copy into isolated volumes before treating the backup as recoverable. The source repository is public; the current distribution is the source and self-hosted guide, with images built locally and no versioned release or prebuilt GHCR images available yet.
 
 ## Validate changes
 
