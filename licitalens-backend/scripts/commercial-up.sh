@@ -43,7 +43,7 @@ else
   echo "→ Seed demo omitido (SKIP_DEMO_SEED=1)."
 fi
 
-echo "→ Rebuild do gateway (rotas SaaS recentes)…"
+echo "→ Rebuild do gateway (rotas de conta recentes)…"
 "${COMPOSE[@]}" up -d --build gateway >/dev/null
 
 echo "→ Aguardando gateway…"

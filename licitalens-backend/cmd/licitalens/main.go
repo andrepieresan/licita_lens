@@ -49,7 +49,7 @@ func runIngestion(command string, args []string) {
 	if command == "sync" {
 		start, end = time.Now(), time.Now()
 	}
-	runner := ingestion.Runner{Client: pncp.NewClient(os.Getenv("PNCP_BASE_URL"), 30*time.Second), Archive: ingestion.FileArchive{Root: env("RAW_ARCHIVE_DIR", ".data/raw")}, Publisher: ingestion.JSONPublisher{Output: os.Stdout}, Logger: slog.New(slog.NewJSONHandler(os.Stderr, nil)), PageSize: envInt("PNCP_PAGE_SIZE", 50), MaxPages: *maxPages}
+	runner := ingestion.Runner{Client: pncp.NewClientWithFallback(os.Getenv("PNCP_BASE_URL"), os.Getenv("PNCP_FALLBACK_URL"), os.Getenv("PNCP_FALLBACK_API_KEY"), 30*time.Second), Archive: ingestion.FileArchive{Root: env("RAW_ARCHIVE_DIR", ".data/raw")}, Publisher: ingestion.JSONPublisher{Output: os.Stdout}, Logger: slog.New(slog.NewJSONHandler(os.Stderr, nil)), PageSize: envInt("PNCP_PAGE_SIZE", 50), MaxPages: *maxPages}
 	for day := start; !day.After(end); day = day.AddDate(0, 0, 1) {
 		var syncErr error
 		if command == "sync" {

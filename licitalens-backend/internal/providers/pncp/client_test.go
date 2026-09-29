@@ -22,3 +22,45 @@ func TestPublicationsMapsOfficialPayload(t *testing.T) {
 		t.Fatalf("unexpected page: %#v", page)
 	}
 }
+
+func TestPublicationsUsesAuthenticatedFallbackAfterTransientFailure(t *testing.T) {
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "unavailable", http.StatusServiceUnavailable)
+	}))
+	defer primary.Close()
+
+	fallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("x-api-key"); got != "test-key" {
+			t.Fatalf("unexpected fallback API key: %q", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[],"totalPaginas":0,"numeroPagina":1,"paginasRestantes":0}`))
+	}))
+	defer fallback.Close()
+
+	_, err := NewClientWithFallback(primary.URL, fallback.URL, "test-key", time.Second).Publications(context.Background(), time.Now(), time.Now(), 6, 1, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPublicationsDoesNotFallbackAfterBadRequest(t *testing.T) {
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "bad request", http.StatusBadRequest)
+	}))
+	defer primary.Close()
+
+	fallbackCalled := false
+	fallback := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		fallbackCalled = true
+	}))
+	defer fallback.Close()
+
+	_, err := NewClientWithFallback(primary.URL, fallback.URL, "test-key", time.Second).Publications(context.Background(), time.Now(), time.Now(), 6, 1, 10)
+	if err == nil {
+		t.Fatal("expected bad request error")
+	}
+	if fallbackCalled {
+		t.Fatal("fallback must not run for a bad request")
+	}
+}

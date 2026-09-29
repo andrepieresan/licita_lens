@@ -1,0 +1,34 @@
+{{- if .Values.mobile.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "licitalens.fullname" . }}-mobile
+  labels: { app.kubernetes.io/name: mobile, app.kubernetes.io/part-of: licitalens }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app.kubernetes.io/name: mobile, app.kubernetes.io/instance: {{ .Release.Name }} } }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: mobile, app.kubernetes.io/instance: {{ .Release.Name }}, app.kubernetes.io/part-of: licitalens }
+    spec:
+      containers:
+        - name: mobile
+          image: "{{ .Values.mobile.image.repository }}:{{ .Values.mobile.image.tag }}"
+          imagePullPolicy: {{ .Values.mobile.image.pullPolicy }}
+          ports: [{ name: expo, containerPort: 19006 }]
+          env:
+            - { name: EXPO_PUBLIC_API_URL, value: {{ .Values.mobile.apiUrl | quote }} }
+            - { name: REACT_NATIVE_PACKAGER_HOSTNAME, value: {{ .Values.mobile.host | quote }} }
+          readinessProbe: { httpGet: { path: /, port: expo }, initialDelaySeconds: 10, periodSeconds: 5 }
+          livenessProbe: { httpGet: { path: /, port: expo }, initialDelaySeconds: 20, periodSeconds: 10 }
+          resources: {{ toYaml .Values.mobile.resources | nindent 12 }}
+          securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: ["ALL"] } }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "licitalens.fullname" . }}-mobile
+spec:
+  selector: { app.kubernetes.io/name: mobile, app.kubernetes.io/instance: {{ .Release.Name }} }
+  ports: [{ name: expo, port: 19006, targetPort: expo }]
+{{- end }}

@@ -23,10 +23,10 @@ else
   echo "   tenancy.subscription_history já existe."
 fi
 
-echo "→ Aplicando migration 007 (contas SaaS), se necessário…"
+echo "→ Aplicando migration 007 (contas), se necessário…"
 TABLE=$("${COMPOSE[@]}" exec -T postgres psql -U licitalens -d licitalens -tAc "SELECT to_regclass('tenancy.accounts')" | tr -d '[:space:]')
 if [[ -z "$TABLE" ]]; then
-  "${COMPOSE[@]}" exec -T postgres psql -U licitalens -d licitalens -v ON_ERROR_STOP=1 < "${ROOT}/db/postgres/007_saas_accounts.sql"
+  "${COMPOSE[@]}" exec -T postgres psql -U licitalens -d licitalens -v ON_ERROR_STOP=1 < "${ROOT}/db/postgres/007_accounts.psql"
   echo "   Migration 007 aplicada."
 else
   echo "   tenancy.accounts já existe."
@@ -64,3 +64,6 @@ echo "→ Aplicando migration 011 (sessões e tokens de conta)…"
 
 echo "→ Aplicando migration 012 (aceite jurídico)…"
 "${COMPOSE[@]}" exec -T postgres psql -U licitalens -d licitalens -v ON_ERROR_STOP=1 < "${ROOT}/db/postgres/012_legal_acceptance.psql"
+
+echo "→ Aplicando migration 014 (operadores de plataforma)…"
+"${COMPOSE[@]}" exec -T postgres psql -U licitalens -d licitalens -v ON_ERROR_STOP=1 < "${ROOT}/db/postgres/014_platform_operators.psql"

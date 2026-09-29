@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"golang.org/x/crypto/bcrypt"
 	"licitalens.dev/backend/internal/domain"
 	"licitalens.dev/backend/internal/store"
 )
@@ -43,11 +42,11 @@ func main() {
 		log.Fatal(err)
 	}
 	defer database.Close()
-	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	hash, err := store.HashPassword(password)
 	if err != nil {
 		log.Fatal(err)
 	}
-	account, createdOrganization, _, err := database.RegisterSaaSAccount(ctx, *email, string(hash), *name, *organization, *plan, domain.LegalAcceptance{
+	account, createdOrganization, _, err := database.RegisterAccount(ctx, *email, hash, *name, *organization, *plan, domain.LegalAcceptance{
 		TermsVersion:   strings.TrimSpace(*termsVersion),
 		PrivacyVersion: strings.TrimSpace(*privacyVersion),
 		AcceptedAt:     time.Now().UTC(),

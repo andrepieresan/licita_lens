@@ -59,11 +59,11 @@ func (m *Memory) NotificationTargets(_ context.Context) ([]domain.NotificationTa
 }
 
 func (m *Memory) ownerEmailLocked(organizationID string) string {
-	if m.commercial == nil || m.saas == nil {
+	if m.commercial == nil || m.account == nil {
 		return ""
 	}
 	for subjectID := range m.commercial.memberships[organizationID] {
-		for _, account := range m.saas.accounts {
+		for _, account := range m.account.accounts {
 			if account.SubjectID == subjectID {
 				return account.Email
 			}

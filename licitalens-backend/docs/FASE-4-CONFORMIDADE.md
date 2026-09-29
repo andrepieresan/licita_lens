@@ -1,6 +1,6 @@
 # Fase 4 — Produto e conformidade
 
-## O que já está no app (SaaS)
+## O que já está no app (Account)
 
 - Aviso **“Apoio à decisão comercial”** (radar e detalhe da licitação).
 - Score rotulado como **aderência ao perfil**, não habilitação/julgamento.

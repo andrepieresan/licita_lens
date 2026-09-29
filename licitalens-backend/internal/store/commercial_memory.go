@@ -151,8 +151,8 @@ func (m *Memory) AdminOrganizations(_ context.Context) ([]domain.AdminOrganizati
 	result := []domain.AdminOrganization{}
 	for _, org := range m.commercial.organizations {
 		item := domain.AdminOrganization{ID: org.ID, Name: org.Name, Status: org.Status, CreatedAt: org.CreatedAt, MemberCount: len(m.commercial.memberships[org.ID])}
-		if m.saas != nil {
-			for _, deal := range m.saas.deals {
+		if m.account != nil {
+			for _, deal := range m.account.deals {
 				if deal.OrganizationID == org.ID {
 					item.PipelineDeals++
 				}

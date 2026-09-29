@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"golang.org/x/crypto/bcrypt"
 	"licitalens.dev/backend/internal/domain"
 	"licitalens.dev/backend/internal/notifications"
 	"licitalens.dev/backend/internal/store"
@@ -139,8 +138,8 @@ func (s *Server) authPasswordReset(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "invalid_token", "token inválido ou expirado", nil)
 		return
 	}
-	hash, err := bcrypt.GenerateFromPassword([]byte(in.Password), bcrypt.DefaultCost)
-	if err != nil || s.store.UpdatePassword(r.Context(), a.SubjectID, string(hash)) != nil {
+	hash, err := store.HashPassword(in.Password)
+	if err != nil || s.store.UpdatePassword(r.Context(), a.SubjectID, hash) != nil {
 		writeError(w, 500, "password_reset_failed", "não foi possível atualizar a senha", nil)
 		return
 	}
@@ -228,12 +227,12 @@ func (s *Server) authSignup(w http.ResponseWriter, r *http.Request) {
 		input.TermsVersion = "demo"
 		input.PrivacyVersion = "demo"
 	}
-	hash, err := bcrypt.GenerateFromPassword([]byte(input.Password), bcrypt.DefaultCost)
+	hash, err := store.HashPassword(input.Password)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "signup_failed", "não foi possível criar a conta", nil)
 		return
 	}
-	account, organization, subscription, err := s.store.RegisterSaaSAccount(r.Context(), input.Email, string(hash), input.FullName, input.OrganizationName, strings.ToLower(input.Plan), domain.LegalAcceptance{TermsVersion: strings.TrimSpace(input.TermsVersion), PrivacyVersion: strings.TrimSpace(input.PrivacyVersion), AcceptedAt: time.Now().UTC()})
+	account, organization, subscription, err := s.store.RegisterAccount(r.Context(), input.Email, hash, input.FullName, input.OrganizationName, strings.ToLower(input.Plan), domain.LegalAcceptance{TermsVersion: strings.TrimSpace(input.TermsVersion), PrivacyVersion: strings.TrimSpace(input.PrivacyVersion), AcceptedAt: time.Now().UTC()})
 	if err != nil {
 		writeError(w, http.StatusConflict, "signup_failed", err.Error(), nil)
 		return
@@ -276,9 +275,17 @@ func (s *Server) authLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "invalid_credentials", "e-mail ou senha inválidos", nil)
 		return
 	}
-	if bcrypt.CompareHashAndPassword([]byte(hash), []byte(input.Password)) != nil {
+	if !store.CheckPassword(hash, input.Password) {
 		writeError(w, http.StatusUnauthorized, "invalid_credentials", "e-mail ou senha inválidos", nil)
 		return
+	}
+	if store.NeedsPasswordRehash(hash) {
+		upgradedHash, hashErr := store.HashPassword(input.Password)
+		if hashErr != nil {
+			s.log.Error("upgrade legacy password hash", "error", hashErr)
+		} else if updateErr := s.store.UpdatePassword(r.Context(), account.SubjectID, upgradedHash); updateErr != nil {
+			s.log.Error("upgrade legacy password hash", "error", updateErr)
+		}
 	}
 	if s.cloud {
 		verified, verifyErr := s.store.EmailVerified(r.Context(), account.SubjectID)

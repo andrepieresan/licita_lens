@@ -167,14 +167,6 @@ func (s *Server) adminPanel(w http.ResponseWriter, _ *http.Request) {
 	_, _ = w.Write(adminPanelHTML)
 }
 
-func (s *Server) adminAuthorized(r *http.Request) bool {
-	expected := strings.TrimSpace(getenv("ADMIN_API_KEY"))
-	if expected == "" {
-		return s.demo
-	}
-	return r.Header.Get("X-Admin-Key") == expected
-}
-
 func (s *Server) handleCheckoutCompleted(w http.ResponseWriter, r *http.Request, payload []byte) {
 	var event struct {
 		Data struct {

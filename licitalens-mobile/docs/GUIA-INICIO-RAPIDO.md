@@ -12,7 +12,7 @@ Use este roteiro na **primeira vez** no app (cadastro → radar → pipeline →
 |--------|----------------|
 | API + **dados reais PNCP** (radar) | `cd licitalens-backend && make phase1-up` |
 | API + banco + alertas (com seed demo) | `cd licitalens-backend && make commercial-up` |
-| App (modo SaaS, **não** demo offline) | `cd licitalens-mobile && bun run commercial:web` |
+| App (modo com conta, **não** demo offline) | `cd licitalens-mobile && bun run commercial:web` |
 | Abrir no navegador | URL que o Expo mostrar (ex.: http://localhost:8081) |
 
 > **Importante:** não use `bun run demo:web` para este guia — o demo roda sem login real. Use `commercial:web`.
@@ -222,4 +222,4 @@ As preferências **sincronizam com o servidor** quando a API está no ar.
 
 ---
 
-*Versão alinhada ao fluxo `SaasFlow` (Expo). Modo demo offline: `App.tsx` com `EXPO_PUBLIC_DEMO_MODE=true` — fluxo parecido, sem API.*
+*Versão alinhada ao fluxo `CommercialFlow` (Expo). Modo demo offline: `App.tsx` com `EXPO_PUBLIC_DEMO_MODE=true` — fluxo parecido, sem API.*

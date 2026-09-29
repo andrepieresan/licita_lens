@@ -36,7 +36,7 @@ cd licitalens-mobile
 bun run commercial:web
 ```
 
-Cadastre-se no fluxo SaaS, complete o perfil comercial e abra **Radar / Licitações** — os itens devem ter `source` PNCP e links para `pncp.gov.br`.
+Cadastre-se no fluxo Account, complete o perfil comercial e abra **Radar / Licitações** — os itens devem ter `source` PNCP e links para `pncp.gov.br`.
 
 ## Variáveis úteis
 

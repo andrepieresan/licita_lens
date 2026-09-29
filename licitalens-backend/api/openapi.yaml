@@ -22,6 +22,15 @@ paths:
       operationId: healthReady
       responses:
         "200": { description: Serviço pronto }
+  /v1/ingestion/status:
+    get:
+      operationId: ingestionStatus
+      parameters: [{ $ref: "#/components/parameters/Organization" }]
+      responses:
+        "200":
+          description: Data da última atualização bem-sucedida da base PNCP
+          content: { application/json: { schema: { $ref: "#/components/schemas/IngestionStatus" } } }
+        default: { $ref: "#/components/responses/Error" }
   /v1/profiles:
     get:
       operationId: listProfiles
@@ -443,6 +452,12 @@ components:
         push: { type: boolean }
         email: { type: boolean }
         ai: { type: boolean }
+    IngestionStatus:
+      type: object
+      properties:
+        last_successful_at: { type: [string, "null"], format: date-time }
+        last_attempt_at: { type: [string, "null"], format: date-time }
+        last_attempt_success: { type: [boolean, "null"] }
     ScoreBreakdown:
       type: object
       properties:

@@ -97,6 +97,15 @@ services:
     depends_on:
       migrate: { condition: service_completed_successfully }
 
+  platform-admin:
+    profiles: ["tools"]
+    build: { context: ../.., args: { SERVICE: platform-admin } }
+    environment:
+      DATABASE_URL: postgres://licitalens:${POSTGRES_PASSWORD}@postgres:5432/licitalens
+      BOOTSTRAP_PASSWORD: ${BOOTSTRAP_PASSWORD:-}
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+
   ingestion:
     build: { context: ../.., args: { SERVICE: ingestion } }
     restart: unless-stopped
@@ -109,7 +118,9 @@ services:
       S3_BUCKET: licitalens-raw
       S3_SECURE: "false"
       PNCP_BASE_URL: ${PNCP_BASE_URL:-}
-      SYNC_INTERVAL: ${SYNC_INTERVAL:-5m}
+      PNCP_FALLBACK_URL: ${PNCP_FALLBACK_URL:-}
+      PNCP_FALLBACK_API_KEY: ${PNCP_FALLBACK_API_KEY:-}
+      SYNC_INTERVAL: ${SYNC_INTERVAL:-5h}
       PNCP_INITIAL_DAYS: ${PNCP_INITIAL_DAYS:-7}
       PNCP_LOOKBACK_DAYS: ${PNCP_LOOKBACK_DAYS:-2}
       PNCP_MAX_RECOVERY_DAYS: ${PNCP_MAX_RECOVERY_DAYS:-30}
@@ -157,6 +168,7 @@ services:
   web:
     build:
       context: ../../../licitalens-mobile
+      dockerfile: Dockerfile.self-hosted
       args:
         EXPO_PUBLIC_LEGAL_OPERATOR_NAME: ${LEGAL_OPERATOR_NAME:-}
         EXPO_PUBLIC_LEGAL_OPERATOR_DOCUMENT: ${LEGAL_OPERATOR_DOCUMENT:-}

@@ -6,7 +6,7 @@ import { DemoLicitaLensClient } from "./src/api/demo";
 import { authConfigured, signInWithKeycloak } from "./src/auth/session";
 import { colors } from "./src/theme";
 import { clearSession, defaultPreferences, loadLocalState, Preferences, saveOnboarded, savePreferences, saveSession } from "./src/storage";
-import SaasFlow from "./src/app/SaasFlow";
+import CommercialFlow from "./src/app/CommercialFlow";
 
 const apiUrl = process.env.EXPO_PUBLIC_API_URL ?? "http://localhost:8080";
 const isDemo = process.env.EXPO_PUBLIC_DEMO_MODE === "true";
@@ -17,7 +17,7 @@ const initialDraft: Draft = { name: "", description: "", keywords: "", states: "
 const demoUsage: Usage = { plan: "pro", profiles: { used: 0, limit: 5 }, ai_analyses: { used: 0, limit: 200 }, daily_alerts: { used: 0, limit: 100 } };
 
 export default function App() {
-  if (!isDemo) return <SaasFlow />;
+  if (!isDemo) return <CommercialFlow />;
   return <DemoApp />;
 }
 

@@ -83,8 +83,15 @@ func New(data store.DataStore, provider ai.Provider, authenticator auth.Authenti
 	mux.HandleFunc("GET /health/ready", s.ready)
 	mux.HandleFunc("GET /metrics", s.metricsEndpoint)
 	mux.HandleFunc("GET /v1/config", s.config)
+	mux.HandleFunc("GET /v1/ingestion/runs", s.ingestionRuns)
+	mux.HandleFunc("GET /v1/ingestion/status", s.ingestionStatus)
+	mux.HandleFunc("POST /v1/admin/auth/login", s.adminAuthLogin)
+	mux.HandleFunc("POST /v1/admin/auth/logout", s.adminAuthLogout)
+	mux.HandleFunc("GET /v1/admin/auth/me", s.adminAuthMe)
 	mux.HandleFunc("GET /v1/admin/overview", s.adminOverview)
 	mux.HandleFunc("GET /v1/admin/organizations", s.adminOrganizations)
+	mux.HandleFunc("GET /v1/admin/organizations/{organizationID}", s.adminOrganizationDetail)
+	mux.HandleFunc("PUT /v1/admin/organizations/{organizationID}/subscription", s.adminUpdateSubscription)
 	mux.HandleFunc("GET /v1/admin/subscription-history", s.adminHistory)
 	mux.HandleFunc("POST /v1/admin/billing/reconcile", s.adminReconcileBilling)
 	mux.HandleFunc("POST /v1/admin/notifications/run", s.adminRunNotifications)
@@ -172,8 +179,16 @@ func (s *Server) middleware(next http.Handler) http.Handler {
 			return
 		}
 		if strings.HasPrefix(r.URL.Path, "/v1/admin/") {
+			if adminPublicPath(r.URL.Path) {
+				if r.URL.Path == "/v1/admin/auth/login" && !s.authRate.allow(r.URL.Path+":"+authRateKey(r), time.Now().UTC()) {
+					writeError(w, http.StatusTooManyRequests, "auth_rate_limited", "aguarde alguns minutos antes de tentar novamente", nil)
+					return
+				}
+				next.ServeHTTP(w, r)
+				return
+			}
 			if !s.adminAuthorized(r) {
-				writeError(w, http.StatusUnauthorized, "admin_unauthorized", "chave administrativa inválida", nil)
+				writeError(w, http.StatusUnauthorized, "admin_unauthorized", "autenticação de operador ou chave administrativa inválida", nil)
 				return
 			}
 			next.ServeHTTP(w, r)
@@ -348,7 +363,8 @@ func (s *Server) setCORS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Access-Control-Allow-Origin", origin)
-	w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Organization-ID, X-Request-ID, X-Admin-Key")
+	w.Header().Set("Access-Control-Allow-Credentials", "true")
+	w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Organization-ID, X-Request-ID, X-Admin-Key, X-CSRF-Token")
 	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
 	if r.Header.Get("Access-Control-Request-Private-Network") == "true" {
 		w.Header().Set("Access-Control-Allow-Private-Network", "true")
@@ -488,14 +504,52 @@ func (s *Server) listOpportunities(w http.ResponseWriter, r *http.Request) {
 		}
 		offset = parsed
 	}
-	values, hasMore, err := s.store.OpportunitiesPage(r.Context(), offset, limit)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "opportunities_unavailable", "não foi possível listar oportunidades", nil)
-		return
+	profileID := strings.TrimSpace(r.URL.Query().Get("profile_id"))
+	var profile domain.CommercialProfile
+	if profileID != "" {
+		var err error
+		profile, err = s.store.Profile(profileID, org(r))
+		if err != nil {
+			writeError(w, http.StatusNotFound, "profile_not_found", "perfil não encontrado", nil)
+			return
+		}
+	}
+	values := make([]domain.Opportunity, 0, limit)
+	hasMore := false
+	pageOffset := offset
+	for len(values) < limit {
+		pageStart := pageOffset
+		page, more, err := s.store.OpportunitiesPage(r.Context(), pageOffset, limit)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "opportunities_unavailable", "não foi possível listar oportunidades", nil)
+			return
+		}
+		hasMore = more
+		pageOffset += len(page)
+		for index, opportunity := range page {
+			if profileID == "" {
+				values = append(values, opportunity)
+				continue
+			}
+			if _, matched := domain.Rank(domain.RankInput{Profile: profile, Opportunity: opportunity, Now: time.Now().UTC()}); matched {
+				values = append(values, opportunity)
+				if len(values) == limit {
+					pageOffset = pageStart + index + 1
+					hasMore = pageOffset < pageStart+len(page) || more
+					break
+				}
+			}
+		}
+		if len(values) < limit {
+			hasMore = more
+		}
+		if profileID == "" || !more || len(page) == 0 || len(values) >= limit {
+			break
+		}
 	}
 	var nextCursor any
 	if hasMore {
-		nextCursor = strconv.Itoa(offset + len(values))
+		nextCursor = strconv.Itoa(pageOffset)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"data": values, "next_cursor": nextCursor})
 }

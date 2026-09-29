@@ -6,6 +6,7 @@ import {
   Linking,
   Modal,
   PanResponder,
+  Platform,
   Pressable,
   RefreshControl,
   SafeAreaView,
@@ -19,7 +20,7 @@ import {
   View,
 } from "react-native";
 import { StatusBar as ExpoStatusBar } from "expo-status-bar";
-import { Analysis, LicitaLensClient, NotificationPreferencesPayload, Opportunity, Profile, ProfileInput, SessionPayload, SubscriptionHistoryEntry, Usage, userFacingError } from "../api/client";
+import { Analysis, IngestionRun, IngestionStatus, LicitaLensClient, NotificationPreferencesPayload, Opportunity, Profile, ProfileInput, SessionPayload, SubscriptionHistoryEntry, Usage, userFacingError } from "../api/client";
 import { Preferences, clearSession, defaultPreferences, loadLocalState, saveOnboarded, savePreferences, saveSession } from "../storage";
 import { DEAL_STAGES, Deal, DealFollowUp, DealStage } from "../api/types";
 import { colors } from "../theme";
@@ -76,16 +77,17 @@ const NAV_ITEMS: Array<{ key: Tab; icon: string; label: string; description: str
 ];
 
 function accountLink(): { phase: "verify-email" | "reset-password"; token: string } | null {
-  if (typeof window === "undefined") return null;
-  const token = new URLSearchParams(window.location.search).get("token")?.trim() ?? "";
+  if (Platform.OS !== "web" || typeof window === "undefined" || !window.location) return null;
+  const location = window.location;
+  const token = new URLSearchParams(location.search).get("token")?.trim() ?? "";
   if (!token) return null;
-  if (window.location.pathname.endsWith("/verificar-email")) return { phase: "verify-email", token };
-  if (window.location.pathname.endsWith("/recuperar-senha")) return { phase: "reset-password", token };
+  if (location.pathname.endsWith("/verificar-email")) return { phase: "verify-email", token };
+  if (location.pathname.endsWith("/recuperar-senha")) return { phase: "reset-password", token };
   return null;
 }
 
 function clearAccountLink() {
-  if (typeof window !== "undefined") window.history.replaceState({}, "", "/");
+  if (Platform.OS === "web" && typeof window !== "undefined" && window.history) window.history.replaceState({}, "", "/");
 }
 
 function tabTitle(tab: Tab) {
@@ -152,7 +154,7 @@ function LegalFooter({ onOpen }: { onOpen: (doc: LegalDoc) => void }) {
   );
 }
 
-export default function SaasFlow() {
+export default function CommercialFlow() {
   const { width } = useWindowDimensions();
   const desktop = width >= 1024;
   const [phase, setPhase] = useState<Phase>("welcome");
@@ -169,6 +171,7 @@ export default function SaasFlow() {
   const [deals, setDeals] = useState<Deal[]>([]);
   const [usage, setUsage] = useState<Usage>();
   const [billingHistory, setBillingHistory] = useState<SubscriptionHistoryEntry[]>([]);
+	const [ingestionStatus, setIngestionStatus] = useState<IngestionStatus>();
 	const [billingEnabled, setBillingEnabled] = useState(false);
   const [selectedOpportunity, setSelectedOpportunity] = useState<Opportunity>();
   const [analysis, setAnalysis] = useState<Analysis>();
@@ -330,12 +333,13 @@ export default function SaasFlow() {
     try {
       const profiles = await client.listProfiles();
       const profileId = profiles.data[0]?.id;
-		const [feed, dealPage, currentUsage, history, config] = await Promise.all([
+		const [feed, dealPage, currentUsage, history, config, latestIngestion] = await Promise.all([
         client.listOpportunities(profileId),
         client.listDeals(),
         client.getUsage(),
         client.billingHistory().catch(() => ({ data: [] as SubscriptionHistoryEntry[] })),
 		client.getConfig(),
+		client.getIngestionStatus(),
       ]);
       setProfile(profiles.data[0]);
       setOpportunities(feed.data);
@@ -343,6 +347,7 @@ export default function SaasFlow() {
       setUsage(currentUsage);
       setBillingHistory(history.data);
 		setBillingEnabled(config.billing);
+		setIngestionStatus(latestIngestion);
       try {
         const remote = await client.getNotificationPreferences();
         const synced = prefsFromApi(remote);
@@ -436,7 +441,7 @@ export default function SaasFlow() {
   if (phase === "welcome") {
     return (
       <View style={styles.authFlow}>
-        <AuthShell title="LicitaLens SaaS" copy="Descubra licitações, faça follow-up comercial e feche contratos públicos em um só lugar.">
+        <AuthShell title="LicitaLens" copy="Descubra licitações, faça follow-up comercial e feche contratos públicos em um só lugar.">
           <SpotlightRing active={spotlightAuthCreateAccount(currentAuthStep, phase)}>
             <PrimaryButton label="Criar conta" onPress={() => setPhase("signup")} />
           </SpotlightRing>
@@ -654,6 +659,7 @@ export default function SaasFlow() {
           opportunities={opportunities}
           deals={deals}
           profile={profile}
+		  ingestionStatus={ingestionStatus}
           preferences={preferences}
           refreshing={refreshing}
           onRefresh={() => void loadAppData(true)}
@@ -744,6 +750,7 @@ export default function SaasFlow() {
         <SettingsScreen
           accountName={accountName}
           emailHint={accountEmail || organizationName}
+          client={client}
           preferences={preferences}
           highlightEmailSwitch={spotlightEmailSwitch(currentAppStep, tab)}
           onChange={async (next) => {
@@ -752,14 +759,19 @@ export default function SaasFlow() {
             try {
               await client.updateNotificationPreferences(prefsToApi(next));
               bumpGuideStep("app-6");
-              if (next.push) {
+            } catch {
+              setError("Preferências salvas no dispositivo, mas não sincronizaram com o servidor.");
+              return;
+            }
+            if (next.push) {
+              try {
                 const token = await resolveExpoPushToken();
                 if (token) {
                   await client.registerPushToken(token);
                 }
+              } catch {
+                setError("Preferências sincronizadas. Não foi possível ativar alertas push neste dispositivo.");
               }
-            } catch {
-              setError("Preferências salvas no dispositivo, mas não sincronizaram com o servidor.");
             }
           }}
           onSignOut={async () => {
@@ -1449,6 +1461,7 @@ function RadarScreen({
   opportunities,
   deals,
   profile,
+	 ingestionStatus,
   preferences,
   refreshing,
   onRefresh,
@@ -1462,6 +1475,7 @@ function RadarScreen({
   opportunities: Opportunity[];
   deals: Deal[];
   profile?: Profile;
+	 ingestionStatus?: IngestionStatus;
   preferences: Preferences;
   refreshing: boolean;
   onRefresh: () => void;
@@ -1521,6 +1535,15 @@ function RadarScreen({
             <Text style={styles.screenEyebrow}>RADAR</Text>
             <Text style={styles.screenTitle}>Oportunidades para avaliar</Text>
             <Text style={styles.screenCopy}>Abra uma licitação para ver prazo, valor e aderência ao seu perfil.</Text>
+			{ingestionStatus?.last_successful_at ? (
+			  <View style={styles.dataFreshness}>
+				<Text style={styles.dataFreshnessText}>Base PNCP atualizada em {formatWhen(ingestionStatus.last_successful_at)}</Text>
+			  </View>
+			) : (
+			  <View style={styles.dataFreshnessWarning}>
+				<Text style={styles.dataFreshnessWarningText}>Aguardando a primeira atualização da base PNCP.</Text>
+			  </View>
+			)}
           </View>
           <ComplianceNotice compact />
           <SpotlightRing active={Boolean(highlightAlert)}>
@@ -1747,7 +1770,11 @@ function ProfileEditorScreen({ profile, onSave, highlightSave }: { profile: Prof
           <Text style={styles.fieldHint}>Todos os termos informados devem aparecer.</Text>
           <Field label="Categorias" value={draft.categories} onChangeText={(categories) => setDraft({ ...draft, categories })} />
           <Field label="Municípios" value={draft.municipalities} onChangeText={(municipalities) => setDraft({ ...draft, municipalities })} />
-          <Field label="Códigos de modalidade" value={draft.modalities} onChangeText={(modalities) => setDraft({ ...draft, modalities })} />
+          <ModalitySelector
+            description={draft.description}
+            selected={splitList(draft.modalities).map(Number).filter(Number.isFinite)}
+            onChange={(modalities) => setDraft({ ...draft, modalities: modalities.join(", ") })}
+          />
         </View>
       )}
       <View style={styles.profilePreview}>
@@ -1839,6 +1866,7 @@ function PlanScreen({
 function SettingsScreen({
   accountName,
   emailHint,
+  client,
   preferences,
   onChange,
   onSignOut,
@@ -1851,6 +1879,7 @@ function SettingsScreen({
 }: {
   accountName: string;
   emailHint: string;
+  client: LicitaLensClient;
   preferences: Preferences;
   onChange: (value: Preferences) => Promise<void>;
   onSignOut: () => Promise<void>;
@@ -1864,6 +1893,20 @@ function SettingsScreen({
 	const [deleteConfirmation, setDeleteConfirmation] = useState("");
 	const [accountBusy, setAccountBusy] = useState(false);
 	const [accountMessage, setAccountMessage] = useState<string>();
+  const [ingestionRuns, setIngestionRuns] = useState<IngestionRun[]>([]);
+  const [ingestionError, setIngestionError] = useState<string>();
+  const [ingestionLoading, setIngestionLoading] = useState(false);
+  const refreshIngestion = useCallback(async () => {
+    setIngestionLoading(true);
+    try {
+      const result = await client.getIngestionRuns();
+      setIngestionRuns(result.data);
+      setIngestionError(undefined);
+    } catch (cause) {
+      setIngestionError(cause instanceof Error ? cause.message : "Não foi possível consultar o histórico PNCP.");
+    } finally { setIngestionLoading(false); }
+  }, [client]);
+  useEffect(() => { void refreshIngestion(); }, [refreshIngestion]);
   const alertOptions: Array<[keyof Preferences, string, string]> = [
     ["push", "Notificações no app", "Novas oportunidades com boa aderência ao perfil"],
     ["email", "Resumo por e-mail", "Seleção diária das licitações do radar"],
@@ -1872,6 +1915,21 @@ function SettingsScreen({
   ];
   return (
     <ScrollView contentContainerStyle={styles.pageScroll}>
+      <View style={styles.settingsPanel}>
+        <View style={styles.sectionHeadingRow}>
+          <View><Text style={styles.sectionTitle}>Saúde da consulta PNCP</Text><Text style={styles.sectionCopy}>Fonte oficial · execução a cada 30 minutos</Text></View>
+          <Pressable onPress={() => void refreshIngestion()} accessibilityRole="button"><Text style={styles.textActionLabel}>{ingestionLoading ? "Atualizando…" : "Atualizar"}</Text></Pressable>
+        </View>
+        {ingestionError ? <Text style={styles.error}>{ingestionError}</Text> : ingestionRuns.length === 0 ? <Text style={styles.muted}>Nenhuma execução registrada. O primeiro resultado aparece após o ciclo inicial.</Text> : ingestionRuns.map((run) => (
+          <View key={run.id} style={styles.settingRow}>
+            <View style={styles.settingCopy}>
+              <Text style={styles.dealTitle}>{run.success ? "✓ Funcionou" : "! Falhou"} · {formatWhen(run.finished_at)}</Text>
+              <Text style={styles.muted}>{run.pages} páginas · {run.records} registros · início {formatWhen(run.started_at)}</Text>
+              {!!run.error && <Text style={styles.error}>{run.error}</Text>}
+            </View>
+          </View>
+        ))}
+      </View>
       <View style={styles.accountPanel}>
         <View style={styles.accountAvatar}><Text style={styles.accountAvatarText}>{(accountName || "U").trim().charAt(0).toUpperCase()}</Text></View>
         <View style={styles.accountCopy}>
@@ -2131,6 +2189,7 @@ function ProfileOnboarding({
 }) {
   const [name, setName] = useState("Radar principal");
   const [description, setDescription] = useState("");
+  const [modalities, setModalities] = useState<number[]>([]);
   const [error, setError] = useState<string>();
   const [busy, setBusy] = useState(false);
 
@@ -2149,6 +2208,7 @@ function ProfileOnboarding({
         description: trimmedDescription,
         keywords: [],
         states: [],
+        modalities,
       });
     } catch (cause) {
       setError(userFacingError(cause, "Não foi possível salvar o perfil."));
@@ -2162,11 +2222,62 @@ function ProfileOnboarding({
       <Field label="Nome do perfil" value={name} onChangeText={setName} />
       <Field label="Descrição (obrigatório)" value={description} onChangeText={setDescription} multiline />
       <Text style={styles.muted}>Ex.: notebooks, serviços de TI e suporte para órgãos públicos.</Text>
+      <ModalitySelector description={description} selected={modalities} onChange={setModalities} />
       {error && <Text style={styles.errorInline}>{error}</Text>}
       <SpotlightRing active={Boolean(highlightStart)}>
         <PrimaryButton label={busy ? "Salvando…" : "Ir para o painel"} disabled={busy} onPress={() => void submit()} />
       </SpotlightRing>
     </AuthShell>
+  );
+}
+
+const MODALITY_OPTIONS = [
+  { code: 1, label: "Leilão eletrônico" },
+  { code: 2, label: "Diálogo competitivo" },
+  { code: 3, label: "Concurso" },
+  { code: 4, label: "Concorrência eletrônica" },
+  { code: 5, label: "Concorrência presencial" },
+  { code: 6, label: "Pregão eletrônico" },
+  { code: 7, label: "Pregão presencial" },
+  { code: 8, label: "Dispensa" },
+  { code: 9, label: "Inexigibilidade" },
+  { code: 10, label: "Manifestação de interesse" },
+  { code: 11, label: "Pré-qualificação" },
+  { code: 12, label: "Credenciamento" },
+  { code: 13, label: "Leilão presencial" },
+];
+
+function suggestedModalities(description: string) {
+  const text = description.toLocaleLowerCase("pt-BR");
+  if (/obra|engenharia|constru[cç][aã]o|reforma/.test(text)) return [4, 6];
+  if (/consultoria|art[ií]st|apresenta[cç][aã]o|palestra|cantor|show/.test(text)) return [6, 9];
+  if (/im[oó]vel|ve[ií]culo usado|sucata|aliena[cç][aã]o/.test(text)) return [1];
+  if (/credenciamento|cl[ií]nica|m[eé]dico|laborat[oó]rio/.test(text)) return [12, 6];
+  if (/software|notebook|computador|equipamento|material|medicamento|servi[cç]o/.test(text)) return [6, 8];
+  return [6];
+}
+
+function ModalitySelector({ description, selected, onChange }: { description: string; selected: number[]; onChange: (modalities: number[]) => void }) {
+  const suggestions = suggestedModalities(description);
+  const toggle = (code: number) => onChange(selected.includes(code) ? selected.filter((value) => value !== code) : [...selected, code]);
+  return (
+    <View style={styles.modalitySection}>
+      <Text style={styles.formSectionLabel}>MODALIDADES DA BUSCA</Text>
+      <Text style={styles.fieldHint}>Sugestões pelo texto do perfil. Você pode selecionar mais de uma ou deixar sem seleção para ver todas.</Text>
+      <View style={styles.modalityChips}>
+        {MODALITY_OPTIONS.map((option) => {
+          const active = selected.includes(option.code);
+          const suggested = suggestions.includes(option.code);
+          return (
+            <Pressable key={option.code} accessibilityRole="checkbox" accessibilityState={{ checked: active }} onPress={() => toggle(option.code)} style={[styles.modalityChip, active && styles.modalityChipSelected]}>
+              <Text style={[styles.modalityChipText, active && styles.modalityChipTextSelected]}>{active ? "✓ " : ""}{option.label}</Text>
+              {suggested && <Text style={styles.modalitySuggestion}>{active ? "sugerida" : "+ sugestão"}</Text>}
+            </Pressable>
+          );
+        })}
+      </View>
+      <Text style={styles.fieldHint}>As sugestões são orientativas; confira se fazem sentido para sua empresa e para cada edital.</Text>
+    </View>
   );
 }
 
@@ -2444,6 +2555,17 @@ const styles = StyleSheet.create({
   sidebarAccountCopy: { flex: 1, gap: 1 },
   sidebarAccountName: { color: "white", fontSize: 11, fontWeight: "800" },
   sidebarAccountRole: { color: "#7892B4", fontSize: 9 },
+  dataFreshness: { alignSelf: "flex-start", marginTop: 2, backgroundColor: "#E5F7EF", borderRadius: 10, paddingHorizontal: 10, paddingVertical: 7 },
+  dataFreshnessText: { color: "#177245", fontSize: 11, fontWeight: "700" },
+  dataFreshnessWarning: { alignSelf: "flex-start", marginTop: 2, backgroundColor: "#FFF4E5", borderRadius: 10, paddingHorizontal: 10, paddingVertical: 7 },
+  dataFreshnessWarningText: { color: "#9A5B00", fontSize: 11, fontWeight: "700" },
+  modalitySection: { gap: 9, marginTop: 8 },
+  modalityChips: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  modalityChip: { minHeight: 40, flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 11, paddingVertical: 8, borderRadius: 12, borderWidth: 1, borderColor: colors.border, backgroundColor: "white" },
+  modalityChipSelected: { borderColor: colors.blue, backgroundColor: colors.blueSoft },
+  modalityChipText: { color: colors.ink, fontSize: 12, fontWeight: "700" },
+  modalityChipTextSelected: { color: colors.blue },
+  modalitySuggestion: { color: colors.success, fontSize: 9, fontWeight: "800" },
   center: { flex: 1, alignItems: "center", justifyContent: "center" },
   authFlow: { flex: 1, backgroundColor: colors.canvas },
   auth: { flex: 1, backgroundColor: colors.canvas },
@@ -2758,6 +2880,7 @@ const styles = StyleSheet.create({
   usageMetricValue: { color: colors.ink, fontSize: 18, fontWeight: "800", letterSpacing: -0.3 },
   usageMetricLabel: { color: colors.muted, fontSize: 10, lineHeight: 14, fontWeight: "700" },
   sectionHeader: { gap: 4, paddingTop: 4 },
+  sectionHeadingRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 12 },
   sectionTitle: { color: colors.ink, fontSize: 16, fontWeight: "800", letterSpacing: -0.2 },
   sectionCopy: { color: colors.muted, fontSize: 13, lineHeight: 19 },
   textAction: { minHeight: 36, alignItems: "center", justifyContent: "center" },

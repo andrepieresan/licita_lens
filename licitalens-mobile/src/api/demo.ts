@@ -1,4 +1,4 @@
-import { Analysis, LicitaLensAPI, Opportunity, Profile, ProfileInput, PublicConfig, Usage } from "./client";
+import { Analysis, IngestionRun, IngestionStatus, LicitaLensAPI, Opportunity, Profile, ProfileInput, PublicConfig, Usage } from "./client";
 import type { Deal, DealFollowUp, DealStage, NotificationPreferencesPayload, SessionPayload } from "./types";
 
 const now = Date.now();
@@ -22,6 +22,9 @@ export class DemoLicitaLensClient implements LicitaLensAPI {
     whatsapp: false,
     deadline_reminder: true,
   };
+
+  async getIngestionRuns(): Promise<{ data: IngestionRun[] }> { return { data: [] }; }
+  async getIngestionStatus(): Promise<IngestionStatus> { return { last_successful_at: new Date().toISOString(), last_attempt_at: new Date().toISOString(), last_attempt_success: true }; }
 
 	async getConfig(): Promise<PublicConfig> { return { deployment_mode: "demo", public_signup: true, billing: false, push: false, email: false, ai: false }; }
 	async logout() { return undefined; }

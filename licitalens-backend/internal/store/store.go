@@ -24,7 +24,13 @@ type DataStore interface {
 	AdminOverview(context.Context) (domain.AdminOverview, error)
 	AdminOrganizations(context.Context) ([]domain.AdminOrganization, error)
 	AdminSubscriptionHistory(context.Context, int) ([]domain.SubscriptionHistoryEntry, error)
-	RegisterSaaSAccount(context.Context, string, string, string, string, string, domain.LegalAcceptance) (domain.Account, domain.Organization, billing.Subscription, error)
+	RegisterPlatformOperator(context.Context, string, string, string) (domain.PlatformOperator, error)
+	PlatformOperatorByEmail(context.Context, string) (domain.PlatformOperator, string, error)
+	PlatformOperatorBySubject(context.Context, string) (domain.PlatformOperator, error)
+	PlatformSessionActive(context.Context, string, time.Time) (bool, error)
+	RevokePlatformSessions(context.Context, string, time.Time) error
+	ApplyPlatformSubscription(context.Context, string, billing.Subscription, string, string) error
+	RegisterAccount(context.Context, string, string, string, string, string, domain.LegalAcceptance) (domain.Account, domain.Organization, billing.Subscription, error)
 	AccountByEmail(context.Context, string) (domain.Account, string, error)
 	AccountBySubject(context.Context, string) (domain.Account, error)
 	CreateAccountToken(context.Context, string, string, string, time.Time) error
@@ -62,4 +68,19 @@ type DataStore interface {
 	OpportunitiesPage(context.Context, int, int) ([]domain.Opportunity, bool, error)
 	IngestionCheckpoint(context.Context, string, string) (string, error)
 	SaveIngestionCheckpoint(context.Context, string, string, string) error
+}
+
+type IngestionRun struct {
+	ID         int64     `json:"id"`
+	StartedAt  time.Time `json:"started_at"`
+	FinishedAt time.Time `json:"finished_at"`
+	Success    bool      `json:"success"`
+	Pages      int       `json:"pages"`
+	Records    int       `json:"records"`
+	Error      string    `json:"error,omitempty"`
+}
+
+type IngestionRunStore interface {
+	RecordIngestionRun(context.Context, IngestionRun) error
+	RecentIngestionRuns(context.Context, int) ([]IngestionRun, error)
 }

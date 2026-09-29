@@ -62,6 +62,16 @@ CREATE TABLE IF NOT EXISTS tenancy.account_tokens (
 );
 CREATE INDEX IF NOT EXISTS account_tokens_lookup_idx ON tenancy.account_tokens(token_hash, purpose) WHERE consumed_at IS NULL;
 CREATE INDEX IF NOT EXISTS accounts_email_idx ON tenancy.accounts (lower(email));
+CREATE TABLE IF NOT EXISTS tenancy.platform_operators (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    email text NOT NULL UNIQUE,
+    password_hash text NOT NULL,
+    full_name text NOT NULL,
+    subject_id text NOT NULL UNIQUE,
+    sessions_revoked_at timestamptz,
+    created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS platform_operators_email_idx ON tenancy.platform_operators (lower(email));
 CREATE TABLE IF NOT EXISTS tenancy.notification_scan (
     organization_id uuid PRIMARY KEY REFERENCES tenancy.organizations(id) ON DELETE CASCADE,
     last_opportunity_at timestamptz NOT NULL DEFAULT '1970-01-01T00:00:00Z'
@@ -126,3 +136,15 @@ CREATE TABLE IF NOT EXISTS crm.deal_followups (
     note text NOT NULL, scheduled_at timestamptz, created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS deal_followups_deal_idx ON crm.deal_followups (deal_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS procurement.ingestion_runs (
+    id bigserial PRIMARY KEY,
+    started_at timestamptz NOT NULL,
+    finished_at timestamptz NOT NULL,
+    success boolean NOT NULL,
+    pages integer NOT NULL DEFAULT 0,
+    records integer NOT NULL DEFAULT 0,
+    error text,
+    created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS ingestion_runs_started_at_idx ON procurement.ingestion_runs (started_at DESC);

@@ -45,6 +45,31 @@ func (p *Postgres) SaveIngestionCheckpoint(ctx context.Context, source, partitio
 	return err
 }
 
+func (p *Postgres) RecordIngestionRun(ctx context.Context, run IngestionRun) error {
+	_, err := p.pool.Exec(ctx, `INSERT INTO procurement.ingestion_runs(started_at,finished_at,success,pages,records,error) VALUES($1,$2,$3,$4,$5,NULLIF($6,''))`, run.StartedAt.UTC(), run.FinishedAt.UTC(), run.Success, run.Pages, run.Records, run.Error)
+	return err
+}
+
+func (p *Postgres) RecentIngestionRuns(ctx context.Context, limit int) ([]IngestionRun, error) {
+	if limit < 1 || limit > 100 {
+		limit = 30
+	}
+	rows, err := p.pool.Query(ctx, `SELECT id,started_at,finished_at,success,pages,records,COALESCE(error,'') FROM procurement.ingestion_runs ORDER BY started_at DESC LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	runs := []IngestionRun{}
+	for rows.Next() {
+		var run IngestionRun
+		if err := rows.Scan(&run.ID, &run.StartedAt, &run.FinishedAt, &run.Success, &run.Pages, &run.Records, &run.Error); err != nil {
+			return nil, err
+		}
+		runs = append(runs, run)
+	}
+	return runs, rows.Err()
+}
+
 func (p *Postgres) IsMember(ctx context.Context, organizationID, subjectID string) (bool, error) {
 	var exists bool
 	err := p.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM tenancy.memberships WHERE organization_id=$1::uuid AND subject_id=$2)`, organizationID, subjectID).Scan(&exists)

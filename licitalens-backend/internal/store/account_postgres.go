@@ -12,7 +12,7 @@ import (
 	"licitalens.dev/backend/internal/domain"
 )
 
-func (p *Postgres) RegisterSaaSAccount(ctx context.Context, email, passwordHash, fullName, organizationName, plan string, legal domain.LegalAcceptance) (domain.Account, domain.Organization, billing.Subscription, error) {
+func (p *Postgres) RegisterAccount(ctx context.Context, email, passwordHash, fullName, organizationName, plan string, legal domain.LegalAcceptance) (domain.Account, domain.Organization, billing.Subscription, error) {
 	email = strings.ToLower(strings.TrimSpace(email))
 	if email == "" || passwordHash == "" || strings.TrimSpace(fullName) == "" || strings.TrimSpace(organizationName) == "" {
 		return domain.Account{}, domain.Organization{}, billing.Subscription{}, errors.New("invalid registration")

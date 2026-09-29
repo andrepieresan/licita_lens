@@ -1,0 +1,48 @@
+{{- if .Values.expoGo.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "licitalens.fullname" . }}-expo-go
+  labels: { app.kubernetes.io/name: expo-go, app.kubernetes.io/part-of: licitalens }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app.kubernetes.io/name: expo-go, app.kubernetes.io/instance: {{ .Release.Name }} } }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: expo-go, app.kubernetes.io/instance: {{ .Release.Name }}, app.kubernetes.io/part-of: licitalens }
+    spec:
+      containers:
+        - name: expo-go
+          image: "{{ .Values.mobile.image.repository }}:{{ .Values.mobile.image.tag }}"
+          imagePullPolicy: {{ .Values.mobile.image.pullPolicy }}
+          command: ["bun", "run", "start", "--", "--host", "lan", "--port", "8082"]
+          ports: [{ name: expo, containerPort: 8082 }]
+          env:
+            - { name: EXPO_PUBLIC_API_URL, value: {{ .Values.mobile.apiUrl | quote }} }
+            - { name: REACT_NATIVE_PACKAGER_HOSTNAME, value: {{ .Values.mobile.host | quote }} }
+          {{- if .Values.expoGo.authSecretName }}
+          volumeMounts:
+            - name: expo-auth
+              mountPath: /home/bun/.expo/state.json
+              subPath: state.json
+              readOnly: true
+          {{- end }}
+          readinessProbe: { tcpSocket: { port: expo }, initialDelaySeconds: 10, periodSeconds: 5 }
+          livenessProbe: { tcpSocket: { port: expo }, initialDelaySeconds: 20, periodSeconds: 10 }
+          resources: {{ toYaml .Values.mobile.resources | nindent 12 }}
+          securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: ["ALL"] } }
+      {{- if .Values.expoGo.authSecretName }}
+      volumes:
+        - name: expo-auth
+          secret:
+            secretName: {{ .Values.expoGo.authSecretName }}
+      {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "licitalens.fullname" . }}-expo-go
+spec:
+  selector: { app.kubernetes.io/name: expo-go, app.kubernetes.io/instance: {{ .Release.Name }} }
+  ports: [{ name: expo, port: 8082, targetPort: expo }]
+{{- end }}

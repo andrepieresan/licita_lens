@@ -383,7 +383,7 @@ func TestPasswordRecoveryTokenIsSingleUse(t *testing.T) {
 func TestCloudLoginRequiresVerifiedEmail(t *testing.T) {
 	memory := store.NewMemory()
 	hash, _ := bcrypt.GenerateFromPassword([]byte("password-strong"), bcrypt.DefaultCost)
-	account, _, _, err := memory.RegisterSaaSAccount(t.Context(), "verify@example.com", string(hash), "Verify", "Verify Org", "essential", domain.LegalAcceptance{})
+	account, _, _, err := memory.RegisterAccount(t.Context(), "verify@example.com", string(hash), "Verify", "Verify Org", "essential", domain.LegalAcceptance{})
 	if err != nil {
 		t.Fatal(err)
 	}

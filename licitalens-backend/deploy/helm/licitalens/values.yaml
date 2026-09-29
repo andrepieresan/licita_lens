@@ -10,6 +10,25 @@ services:
   intelligence: { enabled: true, replicas: 1, port: 8080, command: intelligence }
   notifications: { enabled: true, replicas: 1, port: 8080, command: notifications }
   billing: { enabled: true, replicas: 1, port: 8080, command: billing }
+ingestionCronJob:
+  enabled: false
+  schedule: "0 */5 * * *"
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  startingDeadlineSeconds: 900
+  activeDeadlineSeconds: 1800
+  backoffLimit: 1
+mobile:
+  enabled: false
+  image: { repository: licitalens-mobile, tag: local, pullPolicy: Never }
+  host: 127.0.0.1
+  apiUrl: http://localhost:8080
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits: { cpu: 1000m, memory: 1536Mi }
+expoGo:
+  enabled: false
+  authSecretName: ""
 config:
   demoMode: "false"
   aiProvider: openai

@@ -40,7 +40,7 @@ func TestPostgresAccountLifecycle(t *testing.T) {
 	}
 	email := "account-" + uuid.NewString() + "@example.com"
 	password, _ := bcrypt.GenerateFromPassword([]byte("initial-password"), bcrypt.DefaultCost)
-	account, organization, _, err := db.RegisterSaaSAccount(ctx, email, string(password), "Integration User", "Integration Org", "essential", domain.LegalAcceptance{TermsVersion: "test-terms", PrivacyVersion: "test-privacy", AcceptedAt: time.Now().UTC()})
+	account, organization, _, err := db.RegisterAccount(ctx, email, string(password), "Integration User", "Integration Org", "essential", domain.LegalAcceptance{TermsVersion: "test-terms", PrivacyVersion: "test-privacy", AcceptedAt: time.Now().UTC()})
 	if err != nil {
 		t.Fatal(err)
 	}

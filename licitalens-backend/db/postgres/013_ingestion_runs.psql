@@ -1,0 +1,11 @@
+CREATE TABLE IF NOT EXISTS procurement.ingestion_runs (
+    id bigserial PRIMARY KEY,
+    started_at timestamptz NOT NULL,
+    finished_at timestamptz NOT NULL,
+    success boolean NOT NULL,
+    pages integer NOT NULL DEFAULT 0,
+    records integer NOT NULL DEFAULT 0,
+    error text,
+    created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS ingestion_runs_started_at_idx ON procurement.ingestion_runs (started_at DESC);

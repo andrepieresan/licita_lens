@@ -53,7 +53,7 @@ make commercial-up
 
 Isso copia `.env.commercial.example` → `.env.commercial.local` (se ainda não existir), sobe Postgres/Keycloak/Gateway, aplica as migrations comerciais versionadas em volumes antigos, reaplica o seed demo e imprime URLs. Painel: `http://localhost:8080/admin` com `X-Admin-Key` definido no env local. Encerrar: `make commercial-down`.
 
-Conta SaaS (JWT local + CRM):
+Conta (JWT local + CRM):
 
 - `POST /v1/auth/signup`, `POST /v1/auth/login` e `POST /v1/auth/logout` — cadastro e sessão. No navegador, a sessão é mantida em cookie `HttpOnly` com cookie CSRF separado; clientes nativos podem usar `Authorization: Bearer`.
 - confirmação de e-mail e recuperação de senha usam tokens expiradores de uso único; a interface reconhece os links gerados pela API.
@@ -63,7 +63,7 @@ Conta SaaS (JWT local + CRM):
 
 Cadastros, logins e fluxos de recuperação são limitados a dez tentativas por origem em quinze minutos. A distribuição self-hosted mantém o cadastro público fechado por padrão e fornece um comando local para criar o primeiro proprietário; habilite `PUBLIC_SIGNUP` apenas quando o cadastro aberto for intencional.
 
-App web SaaS: `cd ../licitalens-mobile && bun run commercial:web` (fluxo welcome → cadastro → pipeline Kanban → licitações com análise → perfil → plano).
+App web: `cd ../licitalens-mobile && bun run commercial:web` (fluxo welcome → cadastro → pipeline Kanban → licitações com análise → perfil → plano).
 
 **Alertas (worker):** o serviço `notifications` lê `notification_preferences`, perfis e oportunidades **publicadas após o último ciclo** (cursor em `tenancy.notification_scan`; primeiro ciclo usa lookback de 24h), envia e-mail via SMTP (Mailpit em dev), push via Expo (`EXPO_ACCESS_TOKEN` opcional) e registra deduplicação em `notifications.deliveries`. SMTP tem timeout integral, modos `auto`, `starttls`, `implicit` e `disabled`, e recusa autenticação remota sem TLS. Tokens Expo: `PUT /v1/account/push-token`. Follow-ups usam `next_follow_up_at` nos deals. Disparo manual: `POST /v1/admin/notifications/run` ou botão no painel admin. Mailpit: http://localhost:8025
 
@@ -101,7 +101,7 @@ export ADMIN_API_KEY=change-me
 - `POST /v1/admin/billing/reconcile` consulta o estado atual do Stripe e reaplica assinaturas com metadados de organização; use-o por agendamento administrativo para reparar webhooks perdidos. A operação é idempotente por assinatura, plano, status e período.
 - O comando `billing` executa essa reconciliação automaticamente no modo `cloud`; configure `STRIPE_RECONCILE_INTERVAL` (padrão: `1h`) e mantenha uma única réplica.
 - `POST /v1/account/bootstrap` cria organização, membership `owner` e assinatura `trialing`.
-- Painel interno em `GET /admin` (APIs `/v1/admin/*`, header `X-Admin-Key`; em `DEMO_MODE=true` a chave é opcional).
+- Painel interno em `GET /admin` para **operadores da plataforma** (equipe LicitaLens): login em `POST /v1/admin/auth/login`, sessão JWT (`licitalens_platform_session`) e edição de planos em `PUT /v1/admin/organizations/{id}/subscription`. Crie o primeiro operador com `cmd/platform-admin` (variáveis `DATABASE_URL` e `BOOTSTRAP_PASSWORD`). O header `X-Admin-Key` permanece como integração legada.
 
 Aplique a migration `db/postgres/006_subscription_history.sql` ao subir PostgreSQL.
 

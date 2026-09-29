@@ -35,6 +35,18 @@ docker compose --profile tools run --rm admin \
 unset BOOTSTRAP_PASSWORD
 ```
 
+Create a LicitaLens platform operator (for `/admin` — manage customer plans, not a tenant owner):
+
+```bash
+read -s BOOTSTRAP_PASSWORD && export BOOTSTRAP_PASSWORD
+docker compose --profile tools run --rm platform-admin \
+  --email ops@yourcompany.com \
+  --name "LicitaLens Ops"
+unset BOOTSTRAP_PASSWORD
+```
+
+Sign in at `http://localhost:8080/admin` with that account to view organizations and update subscription plan/status without Stripe.
+
 Use the legal version displayed by the web app if it differs from the example. The command creates a verified owner account and never prints its password. Open `http://localhost:8080` and sign in. The database schema is applied by the `migrate` service; the distribution never inserts demonstration opportunities. The first PNCP synchronization can take several minutes.
 
 The initial synchronization reads the previous seven days by default (`PNCP_INITIAL_DAYS`). The worker persists a durable day cursor and automatically catches up days left pending after a restart, then revisits the latest two days (`PNCP_LOOKBACK_DAYS`) to cover delayed PNCP updates. `PNCP_MAX_RECOVERY_DAYS` (default `30`) bounds automatic catch-up; set it to `0` for an unlimited recovery window when recovering a long interruption.
@@ -65,7 +77,7 @@ Notification delivery attempts are persisted in `notifications.deliveries`. Fail
 
 Invalid procurement events are copied to the durable `procurement.dead-letter.v1` topic with their original topic, partition, offset, key, payload and validation error. The original message is acknowledged only after the DLQ accepts that copy. Inspect pending records with `docker compose exec redpanda rpk topic consume procurement.dead-letter.v1 --num 10`; after correcting a payload, republish it to `procurement.discovered.v1` with the original opportunity key. DLQ entries use the source topic/partition/offset as a stable identifier, so operators can deduplicate ambiguous retries.
 
-PNCP access requires no secret. Configure `PNCP_INITIAL_DAYS`, `PNCP_LOOKBACK_DAYS`, `PNCP_RECENT_PAGES` and `PNCP_MODALITIES` according to the desired initial coverage and provider rate limits. `PNCP_REQUEST_TIMEOUT`, `PNCP_MAX_ATTEMPTS` and `PNCP_RETRY_DELAY` control bounded exponential retries for transient reads; a checkpoint only advances after archive and publication complete. Keep MinIO and Redpanda volumes in the backup because they contain raw archives and pending events.
+Direct PNCP access requires no secret. Configure `PNCP_INITIAL_DAYS`, `PNCP_LOOKBACK_DAYS`, `PNCP_RECENT_PAGES` and `PNCP_MODALITIES` according to the desired initial coverage and provider rate limits. `PNCP_REQUEST_TIMEOUT`, `PNCP_MAX_ATTEMPTS` and `PNCP_RETRY_DELAY` control bounded exponential retries for transient reads; a checkpoint only advances after archive and publication complete. An optional compatible fallback can be configured with `PNCP_FALLBACK_URL` and the secret `PNCP_FALLBACK_API_KEY`; it is used only after transport errors, HTTP 429, or HTTP 5xx responses from the primary PNCP endpoint. Keep MinIO and Redpanda volumes in the backup because they contain raw archives and pending events.
 
 ## Backup and restore
 

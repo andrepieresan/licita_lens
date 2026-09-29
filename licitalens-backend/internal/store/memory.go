@@ -18,7 +18,8 @@ type Memory struct {
 	profiles      map[string]domain.CommercialProfile
 	opportunities map[string]domain.Opportunity
 	commercial    *commercialMemory
-	saas          *saasMemory
+	account       *accountMemory
+	platform      *platformMemory
 	notifications *notificationMemory
 	checkpoints   map[string]string
 }

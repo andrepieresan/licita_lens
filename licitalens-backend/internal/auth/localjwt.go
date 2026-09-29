@@ -29,19 +29,34 @@ func NewLocalJWTFromEnv() *LocalJWT {
 	return &LocalJWT{secret: []byte(secret), issuer: issuer}
 }
 
+const PlatformAudience = "licitalens-platform"
+const PlatformRole = "platform_admin"
+
 func (l *LocalJWT) Issue(subject, email string, ttl time.Duration) (string, error) {
+	return l.issue(subject, email, "", ttl)
+}
+
+func (l *LocalJWT) IssuePlatform(subject, email string, ttl time.Duration) (string, error) {
+	return l.issue(subject, email, PlatformAudience, ttl)
+}
+
+func (l *LocalJWT) issue(subject, email, audience string, ttl time.Duration) (string, error) {
 	if subject == "" || email == "" {
 		return "", errors.New("invalid token subject")
 	}
 	header, _ := json.Marshal(map[string]string{"alg": "HS256", "typ": "JWT"})
 	now := time.Now().UTC()
-	payload, _ := json.Marshal(map[string]any{
+	claims := map[string]any{
 		"sub":   subject,
 		"email": email,
 		"iss":   l.issuer,
 		"iat":   now.Unix(),
 		"exp":   now.Add(ttl).Unix(),
-	})
+	}
+	if audience != "" {
+		claims["aud"] = audience
+	}
+	payload, _ := json.Marshal(claims)
 	signingInput := base64.RawURLEncoding.EncodeToString(header) + "." + base64.RawURLEncoding.EncodeToString(payload)
 	mac := hmac.New(sha256.New, l.secret)
 	mac.Write([]byte(signingInput))
@@ -59,11 +74,12 @@ func (l *LocalJWT) Authenticate(_ context.Context, token string) (Identity, erro
 		return Identity{}, errors.New("invalid token payload")
 	}
 	var claims struct {
-		Subject string `json:"sub"`
-		Issuer  string `json:"iss"`
-		Expires int64  `json:"exp"`
-		Issued  int64  `json:"iat"`
-		Email   string `json:"email"`
+		Subject  string `json:"sub"`
+		Issuer   string `json:"iss"`
+		Expires  int64  `json:"exp"`
+		Issued   int64  `json:"iat"`
+		Email    string `json:"email"`
+		Audience string `json:"aud"`
 	}
 	if json.Unmarshal(payloadJSON, &claims) != nil || claims.Subject == "" {
 		return Identity{}, errors.New("invalid token claims")
@@ -81,7 +97,11 @@ func (l *LocalJWT) Authenticate(_ context.Context, token string) (Identity, erro
 	if !hmac.Equal(signature, mac.Sum(nil)) {
 		return Identity{}, errors.New("invalid token signature")
 	}
-	return Identity{Subject: claims.Subject, Roles: []string{"owner"}, IssuedAt: time.Unix(claims.Issued, 0).UTC()}, nil
+	roles := []string{"owner"}
+	if claims.Audience == PlatformAudience {
+		roles = []string{PlatformRole}
+	}
+	return Identity{Subject: claims.Subject, Roles: roles, IssuedAt: time.Unix(claims.Issued, 0).UTC()}, nil
 }
 
 type Chain struct {

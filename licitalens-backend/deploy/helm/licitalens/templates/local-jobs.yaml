@@ -50,8 +50,12 @@ spec:
           command: ["/bin/sh", "-ec"]
           args:
             - |
-              until rpk topic create procurement.discovered.v1 -p 3 -r 1 -X brokers={{ include "licitalens.fullname" . }}-redpanda:9092; do sleep 2; done
-              rpk topic create procurement.dead-letter.v1 -p 3 -r 1 -X brokers={{ include "licitalens.fullname" . }}-redpanda:9092 || true
+              ensure_topic() {
+                topic="$1"
+                until rpk topic create "$topic" -p 3 -r 1 -X brokers={{ include "licitalens.fullname" . }}-redpanda:9092 >/dev/null 2>&1 || rpk topic describe "$topic" -X brokers={{ include "licitalens.fullname" . }}-redpanda:9092 >/dev/null 2>&1; do sleep 2; done
+              }
+              ensure_topic procurement.discovered.v1
+              ensure_topic procurement.dead-letter.v1
 {{- if .Values.local.bootstrap.enabled }}
 ---
 apiVersion: batch/v1
@@ -59,7 +63,7 @@ kind: Job
 metadata:
   name: {{ include "licitalens.fullname" . }}-bootstrap
   annotations:
-    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook: post-install
     helm.sh/hook-weight: "-1"
     helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
 spec:

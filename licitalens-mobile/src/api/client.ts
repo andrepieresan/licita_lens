@@ -43,6 +43,22 @@ export type PublicConfig = {
   ai: boolean;
 };
 
+export type IngestionRun = {
+  id: number;
+  started_at: string;
+  finished_at: string;
+  success: boolean;
+  pages: number;
+  records: number;
+  error?: string;
+};
+
+export type IngestionStatus = {
+  last_successful_at?: string | null;
+  last_attempt_at?: string | null;
+  last_attempt_success?: boolean | null;
+};
+
 type ClientOptions = {
   baseUrl: string;
   organizationId: string;
@@ -58,6 +74,8 @@ export interface LicitaLensAPI {
   updateProfile(profileId: string, profile: ProfileInput): Promise<Profile>;
   getOpportunity(opportunityId: string): Promise<Opportunity>;
   getUsage(): Promise<Usage>;
+  getIngestionRuns(): Promise<{ data: IngestionRun[] }>;
+  getIngestionStatus(): Promise<IngestionStatus>;
   analyze(opportunityId: string, profileId: string): Promise<Analysis>;
   listOrganizations(): Promise<{ data: Organization[] }>;
   bootstrapOrganization(name: string): Promise<Organization>;
@@ -122,6 +140,14 @@ export class LicitaLensClient implements LicitaLensAPI {
 
   getUsage(): Promise<Usage> {
     return this.request("/v1/usage");
+  }
+
+  getIngestionRuns(): Promise<{ data: IngestionRun[] }> {
+    return this.request("/v1/ingestion/runs?limit=30");
+  }
+
+  getIngestionStatus(): Promise<IngestionStatus> {
+    return this.request("/v1/ingestion/status");
   }
 
   analyze(opportunityId: string, profileId: string): Promise<Analysis> {

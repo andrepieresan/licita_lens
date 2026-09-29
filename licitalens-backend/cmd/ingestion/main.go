@@ -37,12 +37,16 @@ func main() {
 		}
 	}
 	runner := ingestion.Runner{
-		Client:  pncp.NewClient(os.Getenv("PNCP_BASE_URL"), envDuration("PNCP_REQUEST_TIMEOUT", 30*time.Second)),
+		Client: pncp.NewClientWithFallback(
+			os.Getenv("PNCP_BASE_URL"), os.Getenv("PNCP_FALLBACK_URL"), os.Getenv("PNCP_FALLBACK_API_KEY"),
+			envDuration("PNCP_REQUEST_TIMEOUT", 30*time.Second),
+		),
 		Archive: archive, Publisher: publisher, Logger: logger, PageSize: envInt("PNCP_PAGE_SIZE", 50), Checkpoints: checkpoints,
 		MaxAttempts: envInt("PNCP_MAX_ATTEMPTS", 3), RetryDelay: envDuration("PNCP_RETRY_DELAY", 500*time.Millisecond),
 	}
 	var completedCycle atomic.Bool
 	var lastSuccess, lastFailure atomic.Int64
+	var lastRunTimestamp, lastRunSuccessful atomic.Int64
 	var syncedPages, syncedRecords, syncFailures atomic.Uint64
 	healthChecks := []app.HealthCheck{{Name: "initial_sync", Check: func(context.Context) error {
 		if !completedCycle.Load() {
@@ -61,6 +65,12 @@ func main() {
 			fmt.Fprintln(w, "# HELP licitalens_ingestion_last_failure_timestamp_seconds Unix timestamp of the most recent failed PNCP sync.")
 			fmt.Fprintln(w, "# TYPE licitalens_ingestion_last_failure_timestamp_seconds gauge")
 			fmt.Fprintln(w, "licitalens_ingestion_last_failure_timestamp_seconds", lastFailure.Load())
+			fmt.Fprintln(w, "# HELP licitalens_ingestion_last_run_timestamp_seconds Unix timestamp of the most recently completed sync cycle.")
+			fmt.Fprintln(w, "# TYPE licitalens_ingestion_last_run_timestamp_seconds gauge")
+			fmt.Fprintln(w, "licitalens_ingestion_last_run_timestamp_seconds", lastRunTimestamp.Load())
+			fmt.Fprintln(w, "# HELP licitalens_ingestion_last_run_success Whether the most recently completed sync cycle succeeded (1) or failed (0).")
+			fmt.Fprintln(w, "# TYPE licitalens_ingestion_last_run_success gauge")
+			fmt.Fprintln(w, "licitalens_ingestion_last_run_success", lastRunSuccessful.Load())
 			fmt.Fprintln(w, "# HELP licitalens_ingestion_pages_total Number of PNCP pages synchronized by this process.")
 			fmt.Fprintln(w, "# TYPE licitalens_ingestion_pages_total counter")
 			fmt.Fprintln(w, "licitalens_ingestion_pages_total", syncedPages.Load())
@@ -76,7 +86,7 @@ func main() {
 			cancel()
 		}
 	}()
-	interval := 2 * time.Minute
+	interval := 5 * time.Hour
 	if value := os.Getenv("SYNC_INTERVAL"); value != "" {
 		if parsed, err := time.ParseDuration(value); err == nil {
 			interval = parsed
@@ -86,6 +96,9 @@ func main() {
 	// while the lookback window continues to catch delayed provider updates.
 	// The recovery cap is configurable; zero means unlimited.
 	sync := func(lookbackDays int) {
+		startedAt := time.Now().UTC()
+		cyclePages, cycleRecords := 0, 0
+		cycleErrors := []string{}
 		if lookbackDays < 1 {
 			lookbackDays = 1
 		}
@@ -116,10 +129,13 @@ func main() {
 					lastFailure.Store(time.Now().UTC().Unix())
 					if ctx.Err() == nil {
 						logger.Error("sync failed", "modality", modality, "day", day.Format("2006-01-02"), "error", err)
+						cycleErrors = append(cycleErrors, fmt.Sprintf("modalidade %d (%s): %v", modality, day.Format("2006-01-02"), err))
 					}
 				} else {
 					syncedPages.Add(uint64(result.Pages))
 					syncedRecords.Add(uint64(result.Records))
+					cyclePages += result.Pages
+					cycleRecords += result.Records
 				}
 			}
 			if !dayOK {
@@ -132,13 +148,34 @@ func main() {
 			if checkpoints != nil {
 				if err := checkpoints.SaveIngestionCheckpoint(ctx, "pncp", "recovery", day.Format("2006-01-02")); err != nil {
 					logger.Error("save ingestion recovery cursor", "day", day.Format("2006-01-02"), "error", err)
+					cycleErrors = append(cycleErrors, "salvar cursor de recuperação: "+err.Error())
 					return false
 				}
 			}
 			return true
 		})
+		if statusStore, ok := checkpoints.(store.IngestionRunStore); ok {
+			if ctx.Err() != nil {
+				cycleErrors = append(cycleErrors, "execução interrompida: "+ctx.Err().Error())
+			}
+			finishedAt := time.Now().UTC()
+			run := store.IngestionRun{StartedAt: startedAt, FinishedAt: finishedAt, Success: len(cycleErrors) == 0, Pages: cyclePages, Records: cycleRecords, Error: boundedError(strings.Join(cycleErrors, " | "))}
+			if err := statusStore.RecordIngestionRun(ctx, run); err != nil {
+				logger.Error("record ingestion run", "error", err)
+			} else {
+				lastRunTimestamp.Store(finishedAt.Unix())
+				if run.Success {
+					lastRunSuccessful.Store(1)
+				} else {
+					lastRunSuccessful.Store(0)
+				}
+			}
+		}
 	}
 	sync(envInt("PNCP_INITIAL_DAYS", 7))
+	if strings.EqualFold(os.Getenv("PNCP_RUN_ONCE"), "true") {
+		return
+	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
@@ -149,6 +186,15 @@ func main() {
 			sync(envInt("PNCP_LOOKBACK_DAYS", 2))
 		}
 	}
+}
+
+func boundedError(value string) string {
+	const maxRunErrorCharacters = 2048
+	characters := []rune(value)
+	if len(characters) > maxRunErrorCharacters {
+		return string(characters[:maxRunErrorCharacters]) + "…"
+	}
+	return value
 }
 
 func runDayRange(start, end time.Time, syncDay func(time.Time) bool) {
@@ -174,7 +220,9 @@ func adapters(ctx context.Context, logger *slog.Logger) (ingestion.Archive, inge
 }
 func modalities() []int {
 	result := []int{}
-	for _, value := range strings.Split(env("PNCP_MODALITIES", "6"), ",") {
+	// Search every current PNCP modality by default so user profiles can filter
+	// the complete official feed. Operators may narrow this for rate limits.
+	for _, value := range strings.Split(env("PNCP_MODALITIES", "1,2,3,4,5,6,7,8,9,10,11,12,13"), ",") {
 		if parsed, err := strconv.Atoi(strings.TrimSpace(value)); err == nil {
 			result = append(result, parsed)
 		}
