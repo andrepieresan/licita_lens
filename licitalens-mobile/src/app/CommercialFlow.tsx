@@ -20,7 +20,8 @@ import {
   View,
 } from "react-native";
 import { StatusBar as ExpoStatusBar } from "expo-status-bar";
-import { Analysis, IngestionRun, IngestionStatus, LicitaLensClient, NotificationPreferencesPayload, Opportunity, Profile, ProfileInput, SessionPayload, SubscriptionHistoryEntry, Usage, userFacingError } from "../api/client";
+import { Analysis, IngestionRun, IngestionStatus, LicitaLensAPI, LicitaLensClient, NotificationPreferencesPayload, Opportunity, Profile, ProfileInput, SessionPayload, SubscriptionHistoryEntry, Usage, userFacingError } from "../api/client";
+import { DemoLicitaLensClient } from "../api/demo";
 import { Preferences, clearSession, defaultPreferences, loadLocalState, saveOnboarded, savePreferences, saveSession } from "../storage";
 import { DEAL_STAGES, Deal, DealFollowUp, DealStage } from "../api/types";
 import { colors } from "../theme";
@@ -154,18 +155,18 @@ function LegalFooter({ onOpen }: { onOpen: (doc: LegalDoc) => void }) {
   );
 }
 
-export default function CommercialFlow() {
+export default function CommercialFlow({ demo = false }: { demo?: boolean }) {
   const { width } = useWindowDimensions();
   const desktop = width >= 1024;
-  const [phase, setPhase] = useState<Phase>("welcome");
+  const [phase, setPhase] = useState<Phase>(demo ? "app" : "welcome");
   const [accountFlowToken, setAccountFlowToken] = useState("");
   const [tab, setTab] = useState<Tab>("overview");
-  const [accessToken, setAccessToken] = useState<string>();
-  const [organizationId, setOrganizationId] = useState("");
-  const [organizationName, setOrganizationName] = useState("");
-  const [accountName, setAccountName] = useState("");
-  const [accountEmail, setAccountEmail] = useState("");
-  const [subscriptionStatus, setSubscriptionStatus] = useState("trialing");
+  const [accessToken, setAccessToken] = useState<string | undefined>(demo ? "demo-token" : undefined);
+  const [organizationId, setOrganizationId] = useState(demo ? "00000000-0000-0000-0000-000000000001" : "");
+  const [organizationName, setOrganizationName] = useState(demo ? "LicitaLens Demo" : "");
+  const [accountName, setAccountName] = useState(demo ? "Visitante" : "");
+  const [accountEmail, setAccountEmail] = useState(demo ? "demo@licitalens.local" : "");
+  const [subscriptionStatus, setSubscriptionStatus] = useState(demo ? "active" : "trialing");
   const [profile, setProfile] = useState<Profile>();
   const [opportunities, setOpportunities] = useState<Opportunity[]>([]);
   const [deals, setDeals] = useState<Deal[]>([]);
@@ -228,9 +229,9 @@ export default function CommercialFlow() {
     return map;
   }, [opportunities]);
 
-  const client = useMemo(
-    () => new LicitaLensClient({ baseUrl: apiUrl, organizationId, accessToken }),
-    [accessToken, organizationId],
+  const client = useMemo<LicitaLensAPI>(
+    () => demo ? new DemoLicitaLensClient() : new LicitaLensClient({ baseUrl: apiUrl, organizationId, accessToken }),
+    [accessToken, demo, organizationId],
   );
 
   const subscriptionOk = (status: string) => status === "trialing" || status === "active";
@@ -249,7 +250,7 @@ export default function CommercialFlow() {
         setPhase("activate");
         return;
       }
-      const authed = new LicitaLensClient({
+      const authed = demo ? client : new LicitaLensClient({
         baseUrl: apiUrl,
         organizationId: session.organization.id,
         accessToken: session.access_token,
@@ -266,7 +267,7 @@ export default function CommercialFlow() {
       reportError(cause, "Conta criada, mas não foi possível carregar a organização.");
       throw cause;
     }
-  }, [reportError]);
+  }, [client, demo, reportError]);
 
   const playbookUiActive = guideProgress.active && !guideOpen;
   const currentAppStep = phase === "app" && playbookUiActive ? stepForIndex("app", guideProgress.stepIndex) : null;
@@ -278,10 +279,18 @@ export default function CommercialFlow() {
   const followUpDealId = deals.find((d) => d.opportunity_id)?.id;
 
   useEffect(() => {
+    if (demo) {
+      setGuideProgress({ active: false, stepIndex: 0, completed: [] });
+      return;
+    }
     void loadGuideProgress().then(setGuideProgress);
-  }, []);
+  }, [demo]);
 
   useEffect(() => {
+    if (demo) {
+      setLoading(false);
+      return;
+    }
     void loadLocalState().then(async (local) => {
 		const link = accountLink();
 		if (link) {
@@ -325,7 +334,7 @@ export default function CommercialFlow() {
         setLoading(false);
       }
     });
-  }, []);
+  }, [demo]);
 
   const loadAppData = useCallback(async (refresh = false) => {
     setError(undefined);
@@ -582,7 +591,7 @@ export default function CommercialFlow() {
               {desktop && (
                 <View style={styles.livePill}>
                   <View style={styles.liveDot} />
-                  <Text style={styles.livePillText}>Operação online</Text>
+                  <Text style={styles.livePillText}>{demo ? "Dados demonstrativos" : "Operação online"}</Text>
                 </View>
               )}
               <Text style={[styles.headerUser, desktop && styles.headerUserDesktop]}>{desktop ? accountDisplayName.split(" ")[0] : accountDisplayName.slice(0, 1).toUpperCase()}</Text>
@@ -827,6 +836,7 @@ export default function CommercialFlow() {
       </View>
       <OpportunityDetailModal
         item={selectedOpportunity}
+        desktop={desktop}
         analysis={analysis}
         inPipeline={selectedOpportunity ? deals.some((deal) => deal.opportunity_id === selectedOpportunity.id) : false}
         highlightAnalyze={spotlightAnalyze(currentAppStep, modalOpen)}
@@ -939,7 +949,7 @@ function InsightsDashboard({
       <View style={styles.kpiGrid}>
         <KpiCard desktop={desktop} label="Pipeline ativo" value={String(activeDeals.length)} detail="oportunidades em andamento" tone="blue" />
         <KpiCard desktop={desktop} label="Valor potencial" value={money(pipelineValue)} detail="somado no funil" />
-        <KpiCard desktop={desktop} label="Conversão" value={`${conversion}%`} detail={`${wonDeals.length} contratos ganhos`} tone="green" />
+        <KpiCard desktop={desktop} label="Conversão" value={`${conversion}%`} detail={`${wonDeals.length} ${wonDeals.length === 1 ? "contrato ganho" : "contratos ganhos"}`} tone="green" />
         <KpiCard desktop={desktop} label="Prazos próximos" value={String(urgent.length)} detail="até 7 dias" tone={urgent.length ? "orange" : "neutral"} />
       </View>
 
@@ -1596,9 +1606,9 @@ function RadarScreen({
       }}
     />
     <Modal visible={alertOpen} transparent animationType="fade" onRequestClose={() => setAlertOpen(false)}>
-      <View style={styles.composerOverlay}>
+      <View style={[styles.composerOverlay, desktop && styles.alertOverlayDesktop]}>
         <Pressable style={styles.composerBackdrop} onPress={() => setAlertOpen(false)} />
-        <View style={styles.alertSheet}>
+        <View style={[styles.alertSheet, desktop && styles.alertSheetDesktop]}>
           <View style={styles.composerHandle} />
           <View style={styles.alertSheetHeader}>
             <View style={styles.alertIconLarge}><Text style={[styles.alertIconText, styles.alertIconTextLarge]}>✦</Text></View>
@@ -1638,6 +1648,7 @@ function RadarScreen({
 
 function OpportunityDetailModal(props: {
   item?: Opportunity;
+  desktop: boolean;
   analysis?: Analysis;
   inPipeline: boolean;
   highlightAnalyze?: boolean;
@@ -1656,16 +1667,17 @@ function OpportunityDetailModal(props: {
   if (!props.item) return null;
   const item = props.item;
   return (
-    <Modal visible animationType="slide" presentationStyle="pageSheet" onRequestClose={props.onClose}>
-      <SafeAreaView style={styles.modalSafe}>
-        <View style={styles.modalBar}>
-          <View>
-            <Text style={styles.modalEyebrow}>LICITAÇÃO</Text>
-            <Text style={styles.modalBarTitle}>Detalhes da oportunidade</Text>
+    <Modal visible animationType={props.desktop ? "fade" : "slide"} transparent={props.desktop} presentationStyle={props.desktop ? "overFullScreen" : "pageSheet"} onRequestClose={props.onClose}>
+      <SafeAreaView style={[styles.modalSafe, props.desktop && styles.modalSafeDesktop]}>
+        <View style={[styles.modalPanel, props.desktop && styles.modalPanelDesktop]}>
+          <View style={styles.modalBar}>
+            <View>
+              <Text style={styles.modalEyebrow}>LICITAÇÃO</Text>
+              <Text style={styles.modalBarTitle}>Detalhes da oportunidade</Text>
+            </View>
+            <Pressable onPress={props.onClose} style={styles.modalClose}><Text style={styles.modalBack}>Fechar</Text></Pressable>
           </View>
-          <Pressable onPress={props.onClose} style={styles.modalClose}><Text style={styles.modalBack}>Fechar</Text></Pressable>
-        </View>
-        <ScrollView contentContainerStyle={styles.modalContent}>
+          <ScrollView contentContainerStyle={[styles.modalContent, props.desktop && styles.modalContentDesktop]}>
           <Text style={styles.badge}>{item.state || "BR"}</Text>
           <Text style={styles.modalTitle}>{item.object}</Text>
           <Text style={styles.muted}>{item.organization_name}</Text>
@@ -1716,7 +1728,8 @@ function OpportunityDetailModal(props: {
           {item.source_url ? (
             <SecondaryButton label="Abrir fonte oficial" onPress={() => props.onOpenSource(item.source_url!)} />
           ) : null}
-        </ScrollView>
+          </ScrollView>
+        </View>
       </SafeAreaView>
     </Modal>
   );
@@ -1879,7 +1892,7 @@ function SettingsScreen({
 }: {
   accountName: string;
   emailHint: string;
-  client: LicitaLensClient;
+  client: LicitaLensAPI;
   preferences: Preferences;
   onChange: (value: Preferences) => Promise<void>;
   onSignOut: () => Promise<void>;
@@ -2803,7 +2816,8 @@ const styles = StyleSheet.create({
   alertCardText: { color: colors.muted, fontSize: 11, lineHeight: 15 },
   alertConfigureButton: { minHeight: 34, paddingHorizontal: 11, borderRadius: 10, alignItems: "center", justifyContent: "center", backgroundColor: "white" },
   alertConfigureText: { color: colors.blue, fontSize: 11, fontWeight: "800" },
-  alertSheet: { backgroundColor: "white", borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingHorizontal: 20, paddingTop: 10, paddingBottom: 24, gap: 12 },
+  alertSheet: { width: "100%", backgroundColor: "white", borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingHorizontal: 20, paddingTop: 10, paddingBottom: 24, gap: 12 },
+  alertSheetDesktop: { width: "100%", maxWidth: 680, maxHeight: "92%", borderRadius: 24, paddingHorizontal: 28, paddingTop: 20, paddingBottom: 20, borderWidth: 1, borderColor: "#E4EAF2", shadowColor: "#172B4D", shadowOpacity: 0.16, shadowRadius: 28, shadowOffset: { width: 0, height: 16 }, elevation: 12 },
   alertSheetHeader: { flexDirection: "row", alignItems: "center", gap: 11 },
   alertSheetHeaderCopy: { flex: 1, gap: 2 },
   alertChannelRow: { flexDirection: "row", alignItems: "center", gap: 12, backgroundColor: colors.canvas, borderRadius: 14, padding: 12 },
@@ -2852,6 +2866,9 @@ const styles = StyleSheet.create({
   deadline: { color: colors.muted, fontSize: 11, fontWeight: "700" },
   deadlineUrgent: { color: colors.warning },
   modalSafe: { flex: 1, backgroundColor: colors.canvas },
+  modalSafeDesktop: { backgroundColor: "rgba(16, 35, 63, 0.42)", alignItems: "center", justifyContent: "center", padding: 24 },
+  modalPanel: { flex: 1, backgroundColor: colors.canvas },
+  modalPanelDesktop: { width: "100%", maxWidth: 1080, height: "92%", maxHeight: 920, borderRadius: 22, overflow: "hidden", borderWidth: 1, borderColor: "#E4EAF2", shadowColor: "#10233F", shadowOpacity: 0.2, shadowRadius: 30, shadowOffset: { width: 0, height: 16 }, elevation: 14 },
   sourceCard: { borderTopWidth: 1, borderTopColor: colors.border, marginTop: 22, paddingTop: 16 },
   metaLabel: { color: colors.muted, fontSize: 9, fontWeight: "800", letterSpacing: 0.8 },
   modalBar: { paddingHorizontal: 20, paddingVertical: 14, flexDirection: "row", justifyContent: "space-between", alignItems: "center", borderBottomWidth: 1, borderBottomColor: colors.border, backgroundColor: "white" },
@@ -2860,7 +2877,8 @@ const styles = StyleSheet.create({
   modalClose: { backgroundColor: colors.blueSoft, borderRadius: 10, paddingHorizontal: 11, paddingVertical: 8 },
   modalBack: { color: colors.blue, fontWeight: "800", fontSize: 12 },
   modalContent: { padding: 20, gap: 14, paddingBottom: 30 },
-  modalTitle: { fontSize: 22, fontWeight: "800", color: colors.ink, lineHeight: 28 },
+  modalContentDesktop: { width: "100%", maxWidth: 960, alignSelf: "center", paddingHorizontal: 32, paddingTop: 26, paddingBottom: 40, gap: 18 },
+  modalTitle: { fontSize: 25, fontWeight: "800", color: colors.ink, lineHeight: 33, letterSpacing: -0.35 },
   summaryRow: { flexDirection: "row", gap: 10 },
   summaryChip: { flex: 1, backgroundColor: "white", borderRadius: 12, padding: 12, borderWidth: 1, borderColor: colors.border },
   callout: { backgroundColor: colors.navy, borderRadius: 16, padding: 16, gap: 10 },
@@ -2910,6 +2928,7 @@ const styles = StyleSheet.create({
   muted: { color: colors.muted, lineHeight: 20 },
   error: { color: colors.danger, paddingHorizontal: 16 },
   composerOverlay: { flex: 1, justifyContent: "flex-end" },
+  alertOverlayDesktop: { justifyContent: "center", alignItems: "center", padding: 24 },
   composerBackdrop: { ...StyleSheet.absoluteFill, backgroundColor: "rgba(16, 35, 63, 0.42)" },
   composerSheet: { backgroundColor: "white", borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingHorizontal: 20, paddingTop: 10, paddingBottom: 28, gap: 14 },
   composerHandle: { alignSelf: "center", width: 38, height: 4, borderRadius: 4, backgroundColor: "#D8E1EC", marginBottom: 2 },

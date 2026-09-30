@@ -222,4 +222,4 @@ As preferências **sincronizam com o servidor** quando a API está no ar.
 
 ---
 
-*Versão alinhada ao fluxo `CommercialFlow` (Expo). Modo demo offline: `App.tsx` com `EXPO_PUBLIC_DEMO_MODE=true` — fluxo parecido, sem API.*
+*Versão alinhada ao fluxo `CommercialFlow` (Expo). Com `EXPO_PUBLIC_DEMO_MODE=true`, o mesmo fluxo usa dados ilustrativos locais e não depende da API.*

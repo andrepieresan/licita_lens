@@ -3,6 +3,7 @@ import type { Deal, DealFollowUp, DealStage, NotificationPreferencesPayload, Ses
 
 const now = Date.now();
 const date = (days: number) => new Date(now + days * 86_400_000).toISOString();
+const organizationId = "00000000-0000-0000-0000-000000000001";
 
 const opportunities: Opportunity[] = [
   { id: "demo-notebooks", source: "demo", source_id: "demo-notebooks", object: "Aquisição de notebooks corporativos com 16 GB de memória e garantia on-site", organization_name: "Município de Curitiba", state: "PR", municipality: "Curitiba", modality_code: 6, estimated_value_cents: 18000000, published_at: date(-1), proposal_deadline: date(9), updated_at: date(0), source_url: "https://pncp.gov.br/" },
@@ -12,10 +13,30 @@ const opportunities: Opportunity[] = [
 ];
 
 export class DemoLicitaLensClient implements LicitaLensAPI {
-  private profile?: Profile;
+  private profile: Profile = this.makeProfile({
+    name: "Tecnologia e infraestrutura",
+    description: "Software, equipamentos, nuvem, suporte técnico e modernização de ambientes de TI.",
+    keywords: ["software", "notebook", "servidor", "nuvem", "suporte técnico"],
+    categories: ["Tecnologia da informação"],
+    states: ["PR", "SC", "SP"],
+    modalities: [6],
+    required_terms: [],
+    excluded_terms: ["obra civil"],
+    minimum_value_cents: 5000000,
+    maximum_value_cents: 80000000,
+  });
   private analyses = 7;
-  private deals: Deal[] = [];
-  private followups: Record<string, DealFollowUp[]> = {};
+  private deals: Deal[] = [
+    { id: "demo-deal-1", organization_id: organizationId, opportunity_id: "demo-notebooks", title: "Notebooks corporativos", buyer_name: "Município de Curitiba", stage: "proposal", estimated_value_cents: 18000000, next_follow_up_at: date(1), last_follow_up_note: "Proposta técnica revisada; confirmar documentação amanhã.", created_at: date(-5), updated_at: date(-1) },
+    { id: "demo-deal-2", organization_id: organizationId, opportunity_id: "demo-suporte", title: "Suporte e manutenção de equipamentos", buyer_name: "Universidade Estadual de Londrina", stage: "analysis", estimated_value_cents: 7800000, next_follow_up_at: date(2), created_at: date(-3), updated_at: date(-2) },
+    { id: "demo-deal-3", organization_id: organizationId, opportunity_id: "demo-servidores", title: "Modernização de datacenter", buyer_name: "Secretaria de Administração", stage: "negotiation", estimated_value_cents: 46500000, last_follow_up_note: "Equipe comercial validando prazo e garantia.", created_at: date(-8), updated_at: date(-1) },
+    { id: "demo-deal-4", organization_id: organizationId, title: "Licenças de colaboração", buyer_name: "Consórcio Intermunicipal", stage: "won", estimated_value_cents: 9400000, closed_at: date(-12), created_at: date(-30), updated_at: date(-12) },
+    { id: "demo-deal-5", organization_id: organizationId, title: "Renovação de parque de impressão", buyer_name: "Autarquia de Serviços", stage: "lost", estimated_value_cents: 6200000, closed_at: date(-18), created_at: date(-40), updated_at: date(-18) },
+  ];
+  private followups: Record<string, DealFollowUp[]> = {
+    "demo-deal-1": [{ id: "demo-fu-1", deal_id: "demo-deal-1", note: "Proposta técnica revisada; confirmar documentação amanhã.", scheduled_at: date(1), created_at: date(-1) }],
+    "demo-deal-3": [{ id: "demo-fu-2", deal_id: "demo-deal-3", note: "Equipe comercial validando prazo e garantia.", created_at: date(-1) }],
+  };
   private notificationPrefs: NotificationPreferencesPayload = {
     push: true,
     email: true,
@@ -46,16 +67,16 @@ export class DemoLicitaLensClient implements LicitaLensAPI {
     const semantic = item.id === "demo-impressoras" ? 0.42 : 0.89;
     return { matched: true, match: { profile_id: profileId, opportunity_id: item.id, score: Math.round((semantic * .55 + .86 * .2 + .8 * .15 + .64 * .1) * 100), breakdown: { semantic, recency: .86, financial: .8, competition: .64 }, evidence: ["O objeto contém produtos e serviços do seu perfil", "A região está dentro da área atendida", "O valor está na faixa comercial informada"], explanation: "A oportunidade combina com seu portfólio de tecnologia, está na região atendida e apresenta valor compatível com o perfil configurado.", prompt_version: "demo-v1" } };
   }
-  async listOrganizations() { return { data: [{ id: "00000000-0000-0000-0000-000000000001", name: "LicitaLens Demo", status: "active" }] }; }
-  async bootstrapOrganization(name: string) { return { id: "00000000-0000-0000-0000-000000000001", name, status: "active" }; }
-  async billingHistory() { return { data: [{ id: "demo-1", organization_id: "00000000-0000-0000-0000-000000000001", plan: "pro", status: "active", stripe_event_id: "demo_evt", recorded_at: new Date().toISOString() }] }; }
+  async listOrganizations() { return { data: [{ id: organizationId, name: "LicitaLens Demo", status: "active" }] }; }
+  async bootstrapOrganization(name: string) { return { id: organizationId, name, status: "active" }; }
+  async billingHistory() { return { data: [{ id: "demo-1", organization_id: organizationId, plan: "pro", status: "active", stripe_event_id: "demo_evt", recorded_at: new Date().toISOString() }] }; }
   async createCheckout(plan: "essential" | "pro") { return { url: `https://checkout.stripe.com/demo/${plan}` }; }
   async createPortal() { return { url: "https://billing.stripe.com/demo/portal" }; }
   async signup(input: { email: string; password: string; full_name: string; organization_name: string; plan: "essential" | "pro"; legal_accepted: true; terms_version: string; privacy_version: string }): Promise<SessionPayload> {
     return {
       access_token: "demo-token",
       account: { id: "demo-account", email: input.email, full_name: input.full_name },
-      organization: { id: "00000000-0000-0000-0000-000000000001", name: input.organization_name, status: "active" },
+      organization: { id: organizationId, name: input.organization_name, status: "active" },
       subscription: { plan: input.plan, status: "trialing" },
     };
   }
@@ -64,7 +85,7 @@ export class DemoLicitaLensClient implements LicitaLensAPI {
   }
   async getMe() {
     return {
-      organization: { id: "00000000-0000-0000-0000-000000000001", name: "LicitaLens Demo", status: "active" },
+      organization: { id: organizationId, name: "LicitaLens Demo", status: "active" },
       subscription: { plan: "pro", status: "trialing", active: true },
     };
   }
@@ -76,7 +97,7 @@ export class DemoLicitaLensClient implements LicitaLensAPI {
     }
     const deal: Deal = {
       id: `demo-deal-${this.deals.length + 1}`,
-      organization_id: "00000000-0000-0000-0000-000000000001",
+      organization_id: organizationId,
       opportunity_id: input.opportunity_id,
       title: input.title,
       buyer_name: input.buyer_name ?? "",
@@ -118,5 +139,5 @@ export class DemoLicitaLensClient implements LicitaLensAPI {
     return { token };
   }
   async removePushToken(_token: string) {}
-  private makeProfile(input: ProfileInput, id = "demo-profile"): Profile { return { ...input, id, organization_id: "00000000-0000-0000-0000-000000000001", created_at: new Date().toISOString() }; }
+  private makeProfile(input: ProfileInput, id = "demo-profile"): Profile { return { ...input, id, organization_id: organizationId, created_at: date(-45) }; }
 }

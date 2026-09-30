@@ -4,6 +4,18 @@ LicitaLens is an open-source commercial-intelligence platform that helps Brazili
 
 It combines official public data, deterministic and explainable ranking, alerts, and a lightweight CRM workflow. LicitaLens is **not** an official procurement portal, does not submit proposals, and does not replace the public notice or professional legal and accounting advice.
 
+[Run the interactive demo](#quick-start-demo) · [Explore the architecture](licitalens-backend/docs/architecture.md) · [View the source on GitHub](https://github.com/andrepieresan/licita_lens)
+
+## Product preview
+
+![LicitaLens commercial overview with pipeline metrics, deadlines and explainable opportunity intelligence](docs/screenshots/licitalens-dashboard.png)
+
+<p align="center">
+  <img src="docs/screenshots/licitalens-mobile.png" width="360" alt="LicitaLens responsive mobile overview" />
+</p>
+
+The same Expo/React Native experience powers web, Android, and iOS. The portfolio demo opens directly into a pre-populated workspace with illustrative profiles, opportunities, pipeline stages, follow-ups, alerts, and usage metrics.
+
 > **Project status:** active early-stage development. The self-hosted flow has been validated locally from a clean installation, including bootstrap, ingestion with controlled PNCP data, session revocation, and PostgreSQL restoration. External providers and a public production deployment must still be configured and validated by each operator.
 
 ## What is included
@@ -35,7 +47,7 @@ bun install
 bun run demo:web
 ```
 
-This mode uses illustrative local data and does not require a backend, login, payment provider, or cloud account.
+This mode uses illustrative local data and does not require a backend, login, payment provider, or cloud account. It opens the complete commercial workspace so the dashboard, radar, explainable analysis, alerts, activity timeline, profile, and CRM pipeline can be evaluated immediately.
 
 ## Run your own instance
 

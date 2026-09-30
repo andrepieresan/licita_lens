@@ -19,14 +19,14 @@ bun start
 
 ## Demonstração sem integrações
 
-O aplicativo inclui dados locais para validar toda a experiência sem backend, login, pagamento ou provedores externos:
+O aplicativo inclui dados locais para validar toda a experiência sem backend, login, pagamento ou provedores externos. O modo demo usa o mesmo `CommercialFlow` da aplicação integrada e abre um workspace preenchido para avaliação imediata:
 
 ```bash
 bun run demo
 bun run demo:web
 ```
 
-O fluxo inclui onboarding, perfil editável, feed pesquisável, filtros por UF, detalhe da licitação, análise explicável, consumo do plano e preferências persistidas no dispositivo.
+O fluxo inclui visão comercial, perfil editável, radar pesquisável, detalhe da licitação, análise explicável, alertas, histórico de atividades, métricas e pipeline CRM com follow-ups.
 
 ### Ver tudo interligado (app + API + admin)
 
