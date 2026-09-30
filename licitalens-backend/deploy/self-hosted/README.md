@@ -51,6 +51,14 @@ Use the legal version displayed by the web app if it differs from the example. T
 
 The initial synchronization reads the previous seven days by default (`PNCP_INITIAL_DAYS`). The worker persists a durable day cursor and automatically catches up days left pending after a restart, then revisits the latest two days (`PNCP_LOOKBACK_DAYS`) to cover delayed PNCP updates. `PNCP_MAX_RECOVERY_DAYS` (default `30`) bounds automatic catch-up; set it to `0` for an unlimited recovery window when recovering a long interruption.
 
+## AI explanations (optional)
+
+Opportunity ranking stays deterministic. The AI provider only writes an optional explanation from the evidence already calculated by LicitaLens; without a provider, search and ranking continue to work normally.
+
+For OpenAI, set `AI_PROVIDER=openai` and `OPENAI_API_KEY` in the local `.env`. The default text model is `gpt-5-mini`; override it with `OPENAI_TEXT_MODEL` if needed. The key is passed only to the gateway container and must never be committed or exposed in the mobile app.
+
+For a local Ollama service, set `AI_PROVIDER=ollama`, ensure Ollama is listening on the host at `http://localhost:11434`, and pull the configured text model (default `gemma3`). Compose reaches the host through `host.docker.internal`; override `OLLAMA_BASE_URL` when your local setup differs. The first request may take longer while Ollama loads the model.
+
 Public registration is closed by default. Set `PUBLIC_SIGNUP=true` only when any visitor should be allowed to create a new organization; turn it off again after the intended registration window.
 
 ## Operations
